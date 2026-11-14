@@ -15,7 +15,8 @@
     "register:local": "tsx scripts/register-local.ts",
     "build:web": "tsx scripts/build-web.ts",
     "build:seal-lite": "esbuild src/seal-lite.ts --bundle --format=esm --platform=neutral --target=es2022 --outfile=dist/symbolon-seal-lite.js",
-    "door:check": "tsx scripts/door-live-check.ts"
+    "door:check": "tsx scripts/door-live-check.ts",
+    "revocation:check": "tsx scripts/revocation-live-check.ts"
   },
   "license": "Apache-2.0",
   "dependencies": {

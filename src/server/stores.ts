@@ -3,6 +3,7 @@
 
 import type { Anchor } from "../anchor.js";
 import type { LogStore, SignedTreeHead } from "../register.js";
+import type { RegisteredRevocation } from "../revocation.js";
 import type { Cosignature } from "../witness.js";
 
 export type AnchorState = "pending" | "confirmed";
@@ -14,6 +15,10 @@ export interface ExtrasStore {
   pendingAnchors(): Promise<Anchor[]>;
   addCosignature(c: Cosignature): Promise<void>;
   cosignatures(size: number): Promise<Cosignature[]>;
+  /** Stores a sealed revocation under its id and subject. False if that id is already stored. */
+  addRevocation(id: string, subject: string, r: RegisteredRevocation): Promise<boolean>;
+  revocation(id: string): Promise<RegisteredRevocation | null>;
+  revocationsFor(subjects: string[]): Promise<RegisteredRevocation[]>;
 }
 
 export class MemoryExtras implements ExtrasStore {
@@ -41,6 +46,18 @@ export class MemoryExtras implements ExtrasStore {
   async cosignatures(size: number) {
     return this.cosigs.get(size) ?? [];
   }
+  private revs = new Map<string, { subject: string; r: RegisteredRevocation }>();
+  async addRevocation(id: string, subject: string, r: RegisteredRevocation) {
+    if (this.revs.has(id)) return false;
+    this.revs.set(id, { subject, r });
+    return true;
+  }
+  async revocation(id: string) {
+    return this.revs.get(id)?.r ?? null;
+  }
+  async revocationsFor(subjects: string[]) {
+    return [...this.revs.values()].filter((x) => subjects.includes(x.subject)).map((x) => x.r).sort((a, b) => a.index - b.index);
+  }
 }
 
 // ---------- Cloudflare D1 ----------
@@ -64,6 +81,8 @@ CREATE TABLE IF NOT EXISTS heads (size INTEGER PRIMARY KEY, head TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS anchors (size INTEGER PRIMARY KEY, anchor TEXT NOT NULL, state TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS cosignatures (size INTEGER NOT NULL, witness TEXT NOT NULL, cosig TEXT NOT NULL, PRIMARY KEY (size, witness));
 CREATE TABLE IF NOT EXISTS daily_writes (day TEXT PRIMARY KEY, n INTEGER NOT NULL);
+CREATE TABLE IF NOT EXISTS revocations (id TEXT PRIMARY KEY, subject TEXT NOT NULL, idx INTEGER NOT NULL, time TEXT NOT NULL, revocation TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS revocations_subject ON revocations(subject);
 CREATE TABLE IF NOT EXISTS daily_stats (day TEXT NOT NULL, kind TEXT NOT NULL, n INTEGER NOT NULL, PRIMARY KEY (day, kind));
 `;
 
@@ -141,4 +160,35 @@ export class D1Store implements LogStore, ExtrasStore {
     const r = await this.db.prepare("SELECT cosig FROM cosignatures WHERE size = ?").bind(size).all<{ cosig: string }>();
     return r.results.map((x) => JSON.parse(x.cosig) as Cosignature);
   }
+  async addRevocation(id: string, subject: string, r: RegisteredRevocation) {
+    try {
+      await this.db
+        .prepare("INSERT INTO revocations (id, subject, idx, time, revocation) VALUES (?, ?, ?, ?, ?)")
+        .bind(id, subject, r.index, r.time, JSON.stringify(r.revocation))
+        .run();
+      return true;
+    } catch (e) {
+      if (/UNIQUE|PRIMARY KEY|constraint/i.test(String(e))) return false;
+      throw e;
+    }
+  }
+  async revocation(id: string) {
+    const r = await this.db.prepare("SELECT idx, time, revocation FROM revocations WHERE id = ?").bind(id).first<RevRow>();
+    return r ? fromRevRow(r) : null;
+  }
+  async revocationsFor(subjects: string[]) {
+    if (!subjects.length) return [];
+    const r = await this.db
+      .prepare(`SELECT idx, time, revocation FROM revocations WHERE subject IN (${subjects.map(() => "?").join(", ")}) ORDER BY idx LIMIT 100`)
+      .bind(...subjects)
+      .all<RevRow>();
+    return r.results.map(fromRevRow);
+  }
 }
+
+interface RevRow {
+  idx: number;
+  time: string;
+  revocation: string;
+}
+const fromRevRow = (r: RevRow): RegisteredRevocation => ({ revocation: JSON.parse(r.revocation), index: r.idx, time: r.time });

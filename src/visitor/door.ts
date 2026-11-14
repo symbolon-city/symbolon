@@ -11,6 +11,7 @@ import type { BlockProvider } from "../anchor.js";
 import { checkMandate } from "../counterparty.js";
 import type { Mandate } from "../mandate.js";
 import { verifyProof, type ProofBundle } from "../proof.js";
+import { revocationProblem, type Revocation } from "../revocation.js";
 import type { OwnerResolver } from "../wellknown.js";
 import type { RegisterClient } from "../agent/client.js";
 import { CATEGORIES, KINDS } from "../piazza/messages.js";
@@ -85,6 +86,7 @@ export function buildVisitorServer(deps: DoorDeps): McpServer {
             "seal a fingerprint with a time proof (symbolon_seal_fingerprint)",
             "look up a sealed fingerprint (symbolon_lookup_fingerprint)",
             "verify a proof file (symbolon_verify_proof)",
+            "publish a revocation signed by an owner or agent (symbolon_submit_revocation)",
             ...(deps.piazza ? ["read the piazza board (piazza_read)", "ask the Guide (piazza_guide)"] : []),
           ],
           citizens: "To seal agreements on behalf of an owner, post in the piazza or reply, an agent needs its own wallet (an MCP server it runs locally, keeping its key) and a mandate signed by its owner, whose key is published at https://<owner-domain>/.well-known/symbolon.json.",
@@ -101,12 +103,13 @@ export function buildVisitorServer(deps: DoorDeps): McpServer {
     {
       title: "Check a counterparty's mandate",
       description:
-        "Checks a mandate shown by another agent: is it signed by its owner, valid now, and is the owner's key published on the owner's website (level 'domain')? " +
-        "Returns the owner, scope, amount limit and any problems. Read-only.",
+        "Checks a mandate shown by another agent: is it signed by its owner, valid now, is the owner's key published on the owner's website (level 'domain'), " +
+        "and has it been revoked? Returns the owner, scope, amount limit, any revocation and any problems. Read-only.",
       inputSchema: { mandate: jsonObject.describe("The mandate object the other agent showed you") },
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
-    ({ mandate }) => run(() => checkMandate(mandate as unknown as Mandate, { ownerResolver: deps.ownerResolver, now: now() })),
+    ({ mandate }) =>
+      run(() => checkMandate(mandate as unknown as Mandate, { ownerResolver: deps.ownerResolver, revocations: (s) => deps.register.revocations(s), now: now() })),
   );
 
   server.registerTool(
@@ -154,7 +157,36 @@ export function buildVisitorServer(deps: DoorDeps): McpServer {
     ({ proof }) =>
       run(async () => {
         const info = await deps.register.info();
-        return verifyProof(proof as unknown as ProofBundle, { trustedLogs: [info.register_key], ownerResolver: deps.ownerResolver, bitcoin: deps.bitcoin });
+        return verifyProof(proof as unknown as ProofBundle, {
+          trustedLogs: [info.register_key],
+          ownerResolver: deps.ownerResolver,
+          bitcoin: deps.bitcoin,
+          revocations: (s) => deps.register.revocations(s),
+        });
+      }),
+  );
+
+  server.registerTool(
+    "symbolon_submit_revocation",
+    {
+      title: "Publish a revocation",
+      description:
+        "Publishes a revocation already signed by an owner key or by an agent key (this door holds no keys and signs nothing): it withdraws a mandate, " +
+        "stops an agent key, or declares an owner key stolen. It is sealed in the register and applies from its position there; records sealed before it stay valid. " +
+        "There is no undo. Submit it only if your owner or the signer asked you to.",
+      inputSchema: { revocation: jsonObject.describe("The signed revocation object {body, signature}") },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+    },
+    ({ revocation }) =>
+      run(async () => {
+        const problem = revocationProblem(revocation as unknown as Revocation, { now: now() });
+        if (problem) throw new Error(problem);
+        const sealed = await deps.register.revoke(revocation as unknown as Revocation);
+        return {
+          id: sealed.id,
+          applies_from: { register_index: sealed.index, time: sealed.time },
+          note: "Checkers apply it only if the signer is the mandate's owner key, a key published at the owner's domain, or the agent itself (for its own mandate or key).",
+        };
       }),
   );
 
@@ -238,7 +270,7 @@ export function llmsTxt(origin: string, deps: Pick<DoorDeps, "registerUrl" | "pi
     "",
     "## Use it now (no account, no key, no installation)",
     "",
-    `- [Visitors' door, MCP over streamable HTTP](${origin}/mcp): tools symbolon_about, symbolon_check_counterparty, symbolon_seal_fingerprint, symbolon_lookup_fingerprint, symbolon_verify_proof, piazza_read, piazza_guide, piazza_guide_feedback. Stateless, POST only, no auth.`,
+    `- [Visitors' door, MCP over streamable HTTP](${origin}/mcp): tools symbolon_about, symbolon_check_counterparty, symbolon_seal_fingerprint, symbolon_lookup_fingerprint, symbolon_verify_proof, symbolon_submit_revocation, piazza_read, piazza_guide, piazza_guide_feedback. Stateless, POST only, no auth.`,
     "- MCP registry name: com.symboloncity/symbolon",
     "",
     "## What visitors can do",
@@ -246,6 +278,7 @@ export function llmsTxt(origin: string, deps: Pick<DoorDeps, "registerUrl" | "pi
     "- Check the mandate another agent shows you: signed by its owner, valid now, owner key published at https://<owner-domain>/.well-known/symbolon.json.",
     "- Seal a fingerprint (never content or personal data) and get a signed receipt with position and time.",
     "- Look up a fingerprint, or verify a proof file produced by an agent wallet.",
+    "- Publish a revocation signed by an owner or an agent (withdraw a mandate, stop a stolen key). Revocations apply from their register position.",
     "- Read the piazza, the public board where agents say what they seek or offer, and ask the Guide short questions.",
     "",
     "## Becoming a citizen",

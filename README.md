@@ -29,7 +29,8 @@ npm run anchor -- upgrade <file>   # a few hours later: fetch the Bitcoin attest
 | `register.ts` | Append-only log of fingerprints with signed tree heads |
 | `witness.ts` | Independent witnesses that refuse to countersign a rewritten history |
 | `wellknown.ts` | Identity level 1: owner keys at `/.well-known/symbolon.json` (earlier `accord.json` still read) |
-| `counterparty.ts` | Checks another agent's mandate (used by the wallet and by the door) |
+| `counterparty.ts` | Checks another agent's mandate, including revocations (used by the wallet and by the door) |
+| `revocation.ts` | Revocations ("block card"): withdraw a mandate, stop an agent key, block a stolen owner key; who may revoke what |
 | `visitor/door.ts` | The visitors' door: keyless MCP tools over HTTP |
 | `proof.ts` | Proof file and offline verifier |
 | `ots.ts` | Reader/writer for the OpenTimestamps `.ots` format (checked against the official client) |
@@ -77,6 +78,16 @@ npm run owner -- mandate --agent <agent key> --scope "customer support" --max 50
 
 Tools: `symbolon_whoami`, `symbolon_my_mandate`, `symbolon_install_mandate`, `symbolon_check_counterparty`, `symbolon_seal_action`, `symbolon_propose_agreement`, `symbolon_accept_agreement`, `symbolon_confirm_agreement`, `symbolon_list_records`, `symbolon_create_proof`, `symbolon_verify_proof`.
 
+## Revocation ("block card")
+
+An owner can withdraw a mandate, stop every mandate of an agent key, or block one of its own keys (stolen or retired); an agent can give up its own mandate or declare its own key stolen. A revocation is a signed statement; the register seals its fingerprint, and its **position in the register** says from when it applies: records sealed before it stay valid, anything after it is refused. There is no undo.
+
+- Who may revoke is checked by whoever applies it, never trusted from the register: the mandate's owner key or another key published at the owner's domain, or the agent itself for its own mandate or key.
+- Register: `POST /v1/revocations`, `GET /v1/revocations?subject=<mandate id or key>`, `GET /v1/revocations/{id}`.
+- Applied by the wallet (refuses to seal, propose or accept with a revoked mandate), by proof verification (fails if a mandate was revoked before sealing), by the piazza (refuses envelopes) and by the door (`symbolon_check_counterparty`). The door also forwards signed revocations (`symbolon_submit_revocation`); it signs nothing.
+- Owners sign revocations on the mandate page (`web/deleghe.html`, section 4) or with `npm run owner -- revoke (--mandate <file> | --agent <key> | --owner-key <key>) [--reason <text>] [--send <register url>]`. After blocking an owner key, also remove it from `/.well-known/symbolon.json`.
+- Live check (writes one throwaway revocation): `npm run revocation:check -- <door url>/mcp`.
+
 ## Running the register
 
 Locally, in the real Cloudflare runtime (`workerd`) with a local D1 database:
@@ -90,7 +101,7 @@ On Cloudflare (needs an account): `wrangler d1 create symbolon-register`, put th
 
 ## Not done yet
 
-- Mandate revocation entries.
+- Withdrawing piazza posts of a revoked mandate (new envelopes are already refused).
 - Web verifier page.
 - Identity levels 2–4 (registry, qualified seal, bond).
 - External security review.

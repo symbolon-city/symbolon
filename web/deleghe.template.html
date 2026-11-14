@@ -157,6 +157,35 @@ details[open] summary { margin-bottom: 10px; }
     <div id="verify-out" class="verdict" hidden></div>
   </section>
 
+  <section id="revoke-card" class="card" aria-labelledby="t4">
+    <div class="head"><div class="num">4</div><h2 id="t4">Revoca</h2></div>
+    <p class="hint">Il "blocca carta" della città. La revoca viene sigillata nel registro pubblico e vale da quel momento: gli accordi sigillati prima restano validi, dopo nessuno può più usare quella delega. Non si può annullare.</p>
+    <form id="revoke-form">
+      <fieldset class="stack" style="border:0;padding:0;margin:0">
+        <legend class="hint" style="margin-bottom:6px">Cosa vuoi bloccare</legend>
+        <label style="flex-direction:row;gap:8px;align-items:center"><input type="radio" name="what" value="mandate" checked> Una delega</label>
+        <label style="flex-direction:row;gap:8px;align-items:center"><input type="radio" name="what" value="agent"> Tutte le deleghe di un agente (per esempio se la sua chiave è stata rubata)</label>
+        <label style="flex-direction:row;gap:8px;align-items:center"><input type="radio" name="what" value="owner-key"> Il mio timbro: è stato rubato o non lo uso più</label>
+      </fieldset>
+      <label for="revoke-in" id="revoke-in-label">Incolla la delega da revocare
+        <textarea id="revoke-in" spellcheck="false" placeholder='{"body": {"type": "accord/mandate", …}, "signature": "…"}'></textarea>
+      </label>
+      <label for="revoke-reason">Motivo (facoltativo, pubblico: niente dati personali)
+        <input id="revoke-reason" maxlength="200" placeholder="Chiave dell'agente rubata">
+      </label>
+      <p id="revoke-error" class="error" hidden></p>
+      <div class="actions"><button class="primary" type="submit">Firma la revoca</button></div>
+    </form>
+    <div id="revoke-result" class="stack" hidden>
+      <p id="revoke-summary" class="summary"></p>
+      <div class="confirm">
+        <p>Inviando la revoca al registro diventa pubblica e definitiva.</p>
+        <div class="actions"><button id="revoke-send" type="button" class="danger">Invia al registro</button><button id="revoke-copy" type="button">Copia senza inviare</button></div>
+      </div>
+      <textarea id="revoke-out" readonly spellcheck="false" aria-label="Revoca firmata"></textarea>
+      <div id="revoke-sent" class="verdict" hidden></div>
+    </div>
+  </section>
   <p class="note">Prototipo. Il timbro privato viene creato e conservato solo in questo browser e non viene inviato a nessuno. È il livello 1 di identità: prova che la delega viene da chi controlla il sito. I livelli successivi (partita IVA, firma digitale qualificata, cauzione) arriveranno dopo.</p>
 </div>
 <script>/*SCRIPT*/</script>

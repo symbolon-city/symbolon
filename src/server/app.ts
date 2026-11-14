@@ -5,6 +5,7 @@ import { anchorHead, upgradeAnchor, type Anchor } from "../anchor.js";
 import { allAttestations, fromOtsFile } from "../ots.js";
 import { fromBase64 } from "../bytes.js";
 import type { Register } from "../register.js";
+import { revocationId, revocationProblem, revocationSubject, type RegisteredRevocation, type Revocation } from "../revocation.js";
 import { verifyCosignature, type Cosignature } from "../witness.js";
 import type { ExtrasStore } from "./stores.js";
 import { classifyClient, statsPage, type StatsStore } from "./stats.js";
@@ -85,6 +86,9 @@ export function describe(deps: AppDeps) {
       "GET /v1/anchors/{size}": "Bitcoin anchor of the head at that size",
       "POST /v1/cosignatures": "witnesses publish their countersignature of a head",
       "GET /v1/cosignatures/{size}": "countersignatures of the head at that size",
+      "POST /v1/revocations": "body: a signed revocation (mandate, agent key or owner key) → sealed in the register; applies from its register position",
+      "GET /v1/revocations?subject={mandate id or key}": "revocations about these subjects (repeat subject, at most 10); apply them only if signed by an authorized key",
+      "GET /v1/revocations/{id}": "one revocation, with its receipt",
       "GET /stats": "public page with anonymous daily usage counters (JSON at /v1/stats)",
     },
     limits: "writes are rate-limited per client and capped per day; HTTP 429 means try again later",
@@ -126,7 +130,7 @@ async function route(req: Request, deps: AppDeps): Promise<Response> {
       return new Response(statsPage({ ...summary, days }), { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "public, max-age=60" } });
     }
 
-    if (req.method === "POST" && (path === "/v1/entries" || path === "/v1/cosignatures") && deps.allowWrite) {
+    if (req.method === "POST" && (path === "/v1/entries" || path === "/v1/cosignatures" || path === "/v1/revocations") && deps.allowWrite) {
       const refused = await deps.allowWrite(req);
       if (refused) return error(429, refused);
     }
@@ -137,7 +141,35 @@ async function route(req: Request, deps: AppDeps): Promise<Response> {
       return json(await register.append(body.entry), 201);
     }
 
+    if (req.method === "POST" && path === "/v1/revocations") {
+      const r = (await readJson(req)) as Revocation;
+      const problem = revocationProblem(r, { now: new Date() });
+      if (problem) return error(400, problem);
+      const id = revocationId(r);
+      const known = await extras.revocation(id);
+      if (known) return json({ id, ...known, receipt: await register.receipt(id, known.index) });
+      const receipt = await register.append(id);
+      const at = await register.headAt(receipt.index + 1);
+      const sealed: RegisteredRevocation = { revocation: r, index: receipt.index, time: at?.time ?? receipt.head.time };
+      await extras.addRevocation(id, revocationSubject(r), sealed);
+      return json({ id, ...sealed, receipt }, 201);
+    }
+
+    if (req.method === "GET" && path === "/v1/revocations") {
+      const subjects = [...new Set(url.searchParams.getAll("subject"))];
+      if (!subjects.length || subjects.length > 10) return error(400, "give 1 to 10 subject parameters");
+      if (subjects.some((x) => !HEX64.test(x) && !/^ed25519:[0-9a-f]{64}$/.test(x))) return error(400, "a subject is a mandate id (64 hex) or a key (ed25519:<64 hex>)");
+      return json({
+        revocations: await extras.revocationsFor(subjects),
+        note: "Apply a revocation only if it is signed by the mandate's owner key, a key published at the owner's domain, or (for its own mandate or key) the agent. It applies from its register position.",
+      });
+    }
+
     let m: RegExpMatchArray | null;
+    if (req.method === "GET" && (m = path.match(/^\/v1\/revocations\/([0-9a-f]{64})$/))) {
+      const r = await extras.revocation(m[1]);
+      return r ? json({ id: m[1], ...r, receipt: await register.receipt(m[1], r.index) }) : error(404, "revocation not found");
+    }
     if (req.method === "GET" && (m = path.match(/^\/v1\/entries\/([0-9a-f]{64})$/))) {
       const index = await register.store.indexOf(m[1]);
       return index === null ? error(404, "entry not found") : json(await register.receipt(m[1], index));

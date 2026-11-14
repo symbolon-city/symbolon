@@ -4,6 +4,7 @@
 
 import { digest } from "../hash.js";
 import type { Mandate } from "../mandate.js";
+import { revocationsOf, subjectsOf, type RevocationSource } from "../revocation.js";
 import type { OwnerResolver } from "../wellknown.js";
 import { askGuide, describeGuide, guideFeedback, type AskModel, type GuideStore } from "./guide.js";
 import { CATEGORIES, KINDS, REPLIES, checkEnvelope, checkPost, type Envelope, type PostContent, type Reply } from "./messages.js";
@@ -51,6 +52,8 @@ export interface PiazzaDeps {
   origin: string;
   /** Owner domain used for the declared demonstration agents (shown as "demo"). */
   demoDomain?: string;
+  /** Revocations from the notary register. Absent: not checked. Unreachable: the envelope is refused. */
+  revocations?: RevocationSource;
   /** Sends a fingerprint to the notary register; returns its index. */
   seal?: (fingerprint: string) => Promise<number>;
   defer?: (p: Promise<unknown>) => void;
@@ -170,6 +173,15 @@ export async function handlePiazza(req: Request, deps: PiazzaDeps): Promise<Resp
       const keys = await deps.ownerResolver(owner.domain);
       if (!keys || !keys.includes(owner.key))
         return error(403, `owner key not published at https://${owner.domain}/.well-known/symbolon.json: only citizens can act in the piazza (visitors can read)`);
+      if (deps.revocations) {
+        let found;
+        try {
+          found = revocationsOf(env.mandate, await deps.revocations(subjectsOf(env.mandate)), keys);
+        } catch {
+          return error(503, "cannot check revocations right now, retry later");
+        }
+        if (found.length) return error(403, `this mandate was revoked on ${found[0].time}: ask your owner for a new one`);
+      }
       if (!(await store.useNonce(env.body.nonce, nowIso))) return error(409, "envelope already used");
       const agent = env.mandate.body.agent;
       const known = await store.agentsOfOwner(owner.domain);

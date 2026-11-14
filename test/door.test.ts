@@ -5,7 +5,7 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
 import { HttpRegisterClient } from "../src/agent/client.js";
 import { MemoryWalletStorage, Wallet } from "../src/agent/wallet.js";
-import { MemoryStore, Register, createMandate, generateKeyPair, staticOwnerResolver } from "../src/index.js";
+import { MemoryStore, Register, createMandate, createRevocation, generateKeyPair, mandateId, staticOwnerResolver } from "../src/index.js";
 import { handle, type AppDeps } from "../src/server/app.js";
 import { MemoryExtras } from "../src/server/stores.js";
 import { handlePiazza } from "../src/piazza/app.js";
@@ -57,6 +57,7 @@ test("the visitors' door offers only keyless tools", async () => {
     "symbolon_check_counterparty",
     "symbolon_lookup_fingerprint",
     "symbolon_seal_fingerprint",
+    "symbolon_submit_revocation",
     "symbolon_verify_proof",
   ]);
 });
@@ -90,6 +91,15 @@ test("a visitor checks a counterparty: published owner key or not", async () => 
   assert.equal(after.level, "domain");
   const forged = { ...mandate, body: { ...mandate.body, scope: "anything" } };
   assert.ok((await call("symbolon_check_counterparty", { mandate: forged })).problems.includes("mandate signature is invalid"));
+
+  // The owner revokes it through any agent: the door forwards the signed revocation, it signs nothing.
+  const revocation = createRevocation(owner, { target: { kind: "mandate", id: mandateId(mandate) }, reason: "contract ended" });
+  const sealed = await call("symbolon_submit_revocation", { revocation: JSON.stringify(revocation) });
+  assert.equal(typeof sealed.applies_from.register_index, "number");
+  const revoked = await call("symbolon_check_counterparty", { mandate });
+  assert.equal(revoked.ok, false);
+  assert.equal(revoked.revoked.reason, "contract ended");
+  await assert.rejects(call("symbolon_submit_revocation", { revocation: { ...revocation, signature: "00" } }), /signature/);
 });
 
 test("a visitor verifies a proof made by a citizen's wallet", async () => {
@@ -141,7 +151,7 @@ test("over HTTP: stateless MCP at /mcp, description at /", async () => {
 
   const headers = { "mcp-protocol-version": "2025-06-18" };
   const list = (await (await rpc({ jsonrpc: "2.0", id: 2, method: "tools/list" }, headers)).json()) as any;
-  assert.equal(list.result.tools.length, 8);
+  assert.equal(list.result.tools.length, 9);
   const fp = sha("over http");
   const sealed = (await (await rpc({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "symbolon_seal_fingerprint", arguments: { fingerprint: fp } } }, headers)).json()) as any;
   assert.equal(JSON.parse(sealed.result.content[0].text).receipt.index, 0);

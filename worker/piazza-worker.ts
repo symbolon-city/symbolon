@@ -8,6 +8,7 @@ import { handlePiazza } from "../src/piazza/app.js";
 import { D1PiazzaStore, PIAZZA_SCHEMA } from "../src/piazza/stores.js";
 import { claudeAskModel } from "../src/piazza/guide-claude.js";
 import type { D1Like } from "../src/server/stores.js";
+import type { RegisteredRevocation } from "../src/revocation.js";
 
 interface Env {
   DB: D1Like & { exec(sql: string): Promise<unknown> };
@@ -57,6 +58,13 @@ export default {
       ownerResolver: resolver(env, url.host),
       origin: url.origin,
       demoDomain: url.host,
+      revocations: async (subjects) => {
+        const q = new URLSearchParams(subjects.map((s) => ["subject", s]));
+        const req2 = new Request(env.REGISTER_URL.replace(/\/+$/, "") + "/v1/revocations?" + q, { headers: { "user-agent": "symbolon-piazza" } });
+        const res = env.REGISTER ? await env.REGISTER.fetch(req2) : await fetch(req2);
+        if (!res.ok) throw new Error(`register: HTTP ${res.status}`);
+        return ((await res.json()) as { revocations: RegisteredRevocation[] }).revocations;
+      },
       seal: async (fingerprint) => {
         const req2 = new Request(env.REGISTER_URL.replace(/\/+$/, "") + "/v1/entries", {
           method: "POST",

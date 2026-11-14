@@ -2,6 +2,9 @@
 import { generateKeyPair, keyPairFromSecret, type KeyPair } from "../../src/keys.js";
 import { createMandate, mandateId, verifyMandateSignature, withinValidity, type Mandate } from "../../src/mandate.js";
 import { toHex } from "../../src/bytes.js";
+import { createRevocation, type Revocation, type RevocationTarget } from "../../src/revocation.js";
+
+const REGISTER_URL = "https://registro-prova.symbolon-city.workers.dev";
 
 const STORE = "symbolon-owner-v1";
 interface Owner { domain: string; secret: string; publicKey: string }
@@ -51,6 +54,8 @@ function render() {
   $("has-owner").hidden = !has;
   $("mandate-form").toggleAttribute("inert", !has);
   $("mandate-card").classList.toggle("locked", !has);
+  $("revoke-form").toggleAttribute("inert", !has);
+  $("revoke-card").classList.toggle("locked", !has);
   if (owner) {
     $("owner-domain").textContent = owner.domain;
     $("owner-key").textContent = owner.publicKey;
@@ -193,6 +198,86 @@ $("verify-form").addEventListener("submit", (e) => {
   } catch {
     out.classList.add("bad");
     out.textContent = "Testo non riconosciuto: incolla la delega intera, dalla prima { all'ultima }.";
+  }
+});
+
+// ---------- revocation ----------
+
+const what = () => (document.querySelector('input[name="what"]:checked') as HTMLInputElement).value as RevocationTarget["kind"];
+const LABELS: Record<RevocationTarget["kind"], [string, string]> = {
+  mandate: ["Incolla la delega da revocare", '{"body": {"type": "accord/mandate", …}, "signature": "…"}'],
+  agent: ["Codice dell'agente da bloccare", "ed25519:f6bd642c…"],
+  "owner-key": ["Il timbro da bloccare (di solito quello qui sopra)", "ed25519:…"],
+};
+for (const r of document.querySelectorAll<HTMLInputElement>('input[name="what"]'))
+  r.addEventListener("change", () => {
+    const [label, ph] = LABELS[what()];
+    $("revoke-in-label").firstChild!.textContent = label;
+    const area = $<HTMLTextAreaElement>("revoke-in");
+    area.placeholder = ph;
+    if (what() === "owner-key" && owner && !area.value.trim()) area.value = owner.publicKey;
+  });
+
+let pending: Revocation | null = null;
+
+$("revoke-form").addEventListener("submit", (e) => {
+  e.preventDefault();
+  if (!owner) return;
+  const err = $("revoke-error");
+  const input = $<HTMLTextAreaElement>("revoke-in").value.trim();
+  const reason = $<HTMLInputElement>("revoke-reason").value.trim();
+  let target: RevocationTarget;
+  let text: string;
+  try {
+    if (what() === "mandate") {
+      const m = JSON.parse(input) as Mandate;
+      if (m.body.owner.domain !== owner.domain) throw new Error(`Questa delega è di ${m.body.owner.domain}, non di ${owner.domain}.`);
+      target = { kind: "mandate", id: mandateId(m) };
+      text = `Revochi la delega ${mandateId(m).slice(0, 12)}… data all'agente ${m.body.agent.slice(8, 16)}… per: ${m.body.scope}.`;
+    } else {
+      if (!/^ed25519:[0-9a-f]{64}$/.test(input)) throw new Error("Il codice deve iniziare con ed25519: seguito da 64 caratteri.");
+      target = { kind: what() as "agent" | "owner-key", key: input };
+      text =
+        what() === "agent"
+          ? `Blocchi tutte le deleghe di ${owner.domain} all'agente ${input.slice(8, 16)}….`
+          : `Blocchi il timbro ${input.slice(8, 16)}…: tutte le deleghe firmate con lui smettono di valere. Ricordati di toglierlo dal file sul tuo sito.`;
+    }
+    pending = createRevocation(keyPairFromSecret(owner.secret), { target, ownerDomain: owner.domain, ...(reason ? { reason } : {}) });
+  } catch (x) {
+    err.textContent = x instanceof SyntaxError ? "Testo non riconosciuto: incolla la delega intera, dalla prima { all'ultima }." : (x as Error).message;
+    err.hidden = false;
+    return;
+  }
+  err.hidden = true;
+  $("revoke-summary").textContent = text + (reason ? ` Motivo: ${reason}` : "");
+  $<HTMLTextAreaElement>("revoke-out").value = JSON.stringify(pending, null, 2);
+  $("revoke-sent").hidden = true;
+  $<HTMLButtonElement>("revoke-send").disabled = false;
+  $("revoke-result").hidden = false;
+});
+
+$("revoke-copy").addEventListener("click", (e) =>
+  copy($<HTMLTextAreaElement>("revoke-out").value, e.currentTarget as HTMLButtonElement, $<HTMLTextAreaElement>("revoke-out")),
+);
+
+$("revoke-send").addEventListener("click", async () => {
+  if (!pending) return;
+  const btn = $<HTMLButtonElement>("revoke-send");
+  const out = $("revoke-sent");
+  btn.disabled = true;
+  out.hidden = false;
+  out.className = "verdict";
+  out.textContent = "Invio in corso…";
+  try {
+    const res = await fetch(REGISTER_URL + "/v1/revocations", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(pending) });
+    const body = (await res.json()) as { error?: string; index?: number; time?: string };
+    if (!res.ok) throw new Error(body.error ?? `HTTP ${res.status}`);
+    out.classList.add("good");
+    out.textContent = `✔ Revoca sigillata nel registro, posizione ${body.index}, il ${new Date(body.time!).toLocaleString("it-IT")}. Vale da adesso.`;
+  } catch (x) {
+    btn.disabled = false;
+    out.classList.add("bad");
+    out.textContent = `✘ Il registro non ha accettato la revoca: ${(x as Error).message}. Puoi riprovare o copiarla e inviarla più tardi.`;
   }
 });
 

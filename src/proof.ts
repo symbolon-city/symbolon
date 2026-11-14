@@ -9,6 +9,7 @@ import { amountLeq, mandateId, verifyMandateSignature, withinValidity, type Amou
 import { verifyConsistency, verifyInclusion } from "./merkle.js";
 import { entryHash, type SignedRecord } from "./record.js";
 import { entryLeaf, verifyHeadSignature, type Receipt } from "./register.js";
+import { revocationsOf, subjectsOf, type RevocationSource } from "./revocation.js";
 import type { OwnerResolver } from "./wellknown.js";
 import { verifyCosignature, type Cosignature } from "./witness.js";
 
@@ -37,6 +38,8 @@ export interface VerifyOptions {
   clockSkewMs?: number;
   /** Where to read Bitcoin block headers; without it the Bitcoin anchor is not checked. */
   bitcoin?: BlockProvider;
+  /** Revocations of the same register; without it revocations are not checked. */
+  revocations?: RevocationSource;
 }
 
 export type Level = "unverified" | "domain";
@@ -89,11 +92,27 @@ export async function verifyProof(b: ProofBundle, opts: VerifyOptions): Promise<
       Date.parse(rec.body.createdAt) <= Date.parse(head.time) + clockSkew,
     );
     levels[p.agent] = "unverified";
+    let keys: PublicKey[] | null = null;
     if (opts.ownerResolver) {
-      const keys = await opts.ownerResolver(m.body.owner.domain);
+      keys = await opts.ownerResolver(m.body.owner.domain);
       const ok = !!keys && keys.includes(m.body.owner.key);
       if (ok) levels[p.agent] = "domain";
       add(`owner key published by ${m.body.owner.domain}`, ok);
+    }
+    if (opts.revocations) {
+      // A revocation applies from its position in the register: records sealed before it stay valid.
+      try {
+        const found = revocationsOf(m, await opts.revocations(subjectsOf(m)), keys);
+        const before = found.find((r) => r.index < b.receipt.index);
+        const after = found.find((r) => r.index > b.receipt.index);
+        add(
+          `mandate of agent ${who} not revoked before sealing`,
+          !before,
+          before ? `revoked on ${before.time} (register position ${before.index})` : after ? `revoked later, on ${after.time}: does not affect this record` : "no revocation",
+        );
+      } catch {
+        add(`mandate of agent ${who} not revoked before sealing`, false, "could not check revocations");
+      }
     }
   }
 

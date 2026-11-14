@@ -14,6 +14,7 @@ import type { Receipt } from "../register.js";
 import type { OwnerResolver } from "../wellknown.js";
 import type { RegisterClient } from "./client.js";
 import { checkMandate, type CounterpartyCheck } from "../counterparty.js";
+import { revocationsOf, subjectsOf } from "../revocation.js";
 import { signEnvelope, type Action, type Envelope } from "../piazza/messages.js";
 
 export interface StoredRecord {
@@ -130,18 +131,27 @@ export class Wallet {
     if (!verifyMandateSignature(m)) throw new Error("mandate signature is invalid");
     if (!withinValidity(m, this.now().toISOString())) throw new Error("mandate is not valid now");
     const check = await this.checkCounterparty(m);
+    if (check.revoked) throw new Error(`this mandate was revoked on ${check.revoked.at}`);
     this.state.mandate = m;
     await this.persist();
     return check;
   }
 
   checkCounterparty(m: Mandate): Promise<CounterpartyCheck> {
-    return checkMandate(m, { ownerResolver: this.opts.ownerResolver, now: this.now() });
+    return checkMandate(m, { ownerResolver: this.opts.ownerResolver, revocations: (s) => this.register.revocations(s), now: this.now() });
+  }
+
+  /** Refuses to act on a revoked mandate (own or counterparty's). Unreachable revocation list: not blocking. */
+  private async refuseIfRevoked(m: Mandate, whose: string) {
+    const r = await this.register.revocations(subjectsOf(m)).catch(() => []);
+    const hit = revocationsOf(m, r, this.opts.ownerResolver ? await this.opts.ownerResolver(m.body.owner.domain) : null)[0];
+    if (hit) throw new Error(`${whose} mandate was revoked on ${hit.time}${hit.revocation.body.reason ? ` (${hit.revocation.body.reason})` : ""}`);
   }
 
   /** Seals what this agent was asked and what it did. */
   async sealAction(p: { instruction: string; action: string; details?: Json }): Promise<{ entry: string; index: number; sealedAt: string }> {
     const mandate = this.myMandate();
+    await this.refuseIfRevoked(mandate, "my");
     const clauses = [
       { name: "instruction", value: p.instruction },
       { name: "action", value: p.action },
@@ -172,6 +182,8 @@ export class Wallet {
     if (!verifyMandateSignature(p.counterparty)) throw new Error("counterparty mandate signature is invalid");
     if (!withinValidity(p.counterparty, this.now().toISOString())) throw new Error("counterparty mandate is not valid now");
     if (p.counterparty.body.agent === this.key.publicKey) throw new Error("cannot make an agreement with yourself");
+    await this.refuseIfRevoked(mine, "my");
+    await this.refuseIfRevoked(p.counterparty, "the counterparty's");
     this.checkAmount(p.clauses, mine);
     const opened = commitClauses(Object.entries(p.clauses).map(([name, value]) => ({ name, value })));
     const record = signRecord(
@@ -209,6 +221,8 @@ export class Wallet {
     const theirMandate = mandates.find((m) => mandateId(m) === proposer.mandate);
     if (!theirMandate || theirMandate.body.agent !== proposer.agent) throw new Error("the proposer has no valid mandate");
     const counterparty = await this.checkCounterparty(theirMandate);
+    if (counterparty.revoked) throw new Error(`the proposer's mandate was revoked on ${counterparty.revoked.at}`);
+    await this.refuseIfRevoked(mine, "my");
     if (!verifyMandateSignature(theirMandate) || !withinValidity(theirMandate, this.now().toISOString()))
       throw new Error("the proposer's mandate is invalid or expired");
     const clauses = Object.fromEntries(opened.clauses.map((c) => [c.name, c.value]));
@@ -272,6 +286,7 @@ export class Wallet {
       trustedLogs: [info.register_key, ...extraTrustedLogs],
       ownerResolver: this.opts.ownerResolver,
       bitcoin: this.opts.bitcoin,
+      revocations: (s) => this.register.revocations(s),
     });
   }
 
