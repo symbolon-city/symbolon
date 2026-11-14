@@ -5,7 +5,7 @@
 
 import { httpOwnerResolver, type OwnerResolver } from "../src/wellknown.js";
 import { handlePiazza } from "../src/piazza/app.js";
-import { D1PiazzaStore, PIAZZA_SCHEMA } from "../src/piazza/stores.js";
+import { D1PiazzaStore, PIAZZA_MIGRATIONS, PIAZZA_SCHEMA } from "../src/piazza/stores.js";
 import { claudeAskModel } from "../src/piazza/guide-claude.js";
 import type { D1Like } from "../src/server/stores.js";
 import type { RegisteredRevocation } from "../src/revocation.js";
@@ -51,6 +51,7 @@ export default {
     }
     if (!schemaReady) {
       await env.DB.exec(PIAZZA_SCHEMA.trim());
+      for (const sql of PIAZZA_MIGRATIONS) await env.DB.exec(sql).catch(() => {}); // already applied
       schemaReady = true;
     }
     return handlePiazza(req, {

@@ -4,7 +4,7 @@
 
 import { digest } from "../hash.js";
 import type { Mandate } from "../mandate.js";
-import { revocationsOf, subjectsOf, type RevocationSource } from "../revocation.js";
+import { revocationsOf, subjectsOf, type RegisteredRevocation, type RevocationSource } from "../revocation.js";
 import type { OwnerResolver } from "../wellknown.js";
 import { askGuide, describeGuide, guideFeedback, type AskModel, type GuideStore } from "./guide.js";
 import { CATEGORIES, KINDS, REPLIES, checkEnvelope, checkPost, type Envelope, type PostContent, type Reply } from "./messages.js";
@@ -15,9 +15,11 @@ export interface StoredPost {
   ownerDomain: string;
   content: PostContent;
   createdAt: string;
-  status: "active" | "withdrawn";
+  status: "active" | "withdrawn" | "revoked";
   demo: boolean;
   registerIndex: number | null;
+  /** The mandate the post was signed under (absent for posts made before 14/11/2026). */
+  mandate?: Mandate | null;
 }
 
 export interface StoredContact {
@@ -36,6 +38,8 @@ export interface PiazzaStore extends GuideStore {
   post(id: string): Promise<StoredPost | null>;
   posts(filter: { kind?: string; category?: string; now: string; limit: number }): Promise<StoredPost[]>;
   withdraw(id: string): Promise<void>;
+  /** Takes a post off the board because its mandate was revoked. */
+  markRevoked(id: string): Promise<void>;
   countPostsByOwner(ownerDomain: string, sinceIso: string): Promise<number>;
   countActiveByOwner(ownerDomain: string, now: string): Promise<number>;
   agentsOfOwner(ownerDomain: string): Promise<string[]>;
@@ -52,8 +56,13 @@ export interface PiazzaDeps {
   origin: string;
   /** Owner domain used for the declared demonstration agents (shown as "demo"). */
   demoDomain?: string;
-  /** Revocations from the notary register. Absent: not checked. Unreachable: the envelope is refused. */
+  /**
+   * Revocations from the notary register. Absent: not checked. Unreachable: new envelopes are refused,
+   * while posts stay readable until the register answers again.
+   */
   revocations?: RevocationSource;
+  /** How long a post found not revoked is not checked again (default 60 seconds). */
+  revocationCacheMs?: number;
   /** Sends a fingerprint to the notary register; returns its index. */
   seal?: (fingerprint: string) => Promise<number>;
   defer?: (p: Promise<unknown>) => void;
@@ -85,8 +94,42 @@ function viewOf(p: StoredPost) {
       demo: p.demo,
     },
     sealedInRegister: p.registerIndex,
+    ...(p.status !== "active" ? { status: p.status } : {}),
     notice: NOTICE,
   };
+}
+
+const checkedAt = new Map<string, number>();
+
+/**
+ * Takes off the board the posts whose mandate has been revoked, and returns the others.
+ * Posts are looked up in the register at most once per `revocationCacheMs` while they stay clean.
+ */
+export async function dropRevoked(posts: StoredPost[], deps: PiazzaDeps): Promise<StoredPost[]> {
+  if (!deps.revocations) return posts;
+  const ttl = deps.revocationCacheMs ?? 60_000;
+  const now = Date.now();
+  const due = posts.filter((p) => p.status === "active" && p.mandate && now - (checkedAt.get(p.id) ?? -Infinity) >= ttl);
+  if (!due.length) return posts;
+  const subjects = [...new Set(due.flatMap((p) => subjectsOf(p.mandate!)))];
+  const found: RegisteredRevocation[] = [];
+  try {
+    for (let i = 0; i < subjects.length; i += 10) found.push(...(await deps.revocations(subjects.slice(i, i + 10))));
+  } catch {
+    return posts; // register unreachable: keep showing, check again next time
+  }
+  const keys = new Map<string, string[] | null>();
+  const revoked = new Set<string>();
+  for (const p of due) {
+    const domain = p.mandate!.body.owner.domain;
+    if (!keys.has(domain)) keys.set(domain, found.length ? await deps.ownerResolver(domain).catch(() => null) : null);
+    if (revocationsOf(p.mandate!, found, keys.get(domain)!).length) {
+      revoked.add(p.id);
+      await deps.store.markRevoked(p.id);
+      checkedAt.delete(p.id);
+    } else checkedAt.set(p.id, now);
+  }
+  return posts.filter((p) => !revoked.has(p.id));
 }
 
 export function describePiazza(origin: string) {
@@ -127,19 +170,24 @@ export async function handlePiazza(req: Request, deps: PiazzaDeps): Promise<Resp
   try {
     if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
     if (req.method === "GET" && (path === "/" || path === "/v1")) {
-      if ((req.headers.get("accept") ?? "").includes("text/html")) return boardPage(await store.posts({ now: nowIso, limit: 100 }), await store.summary(nowIso));
+      if ((req.headers.get("accept") ?? "").includes("text/html")) {
+        const posts = await dropRevoked(await store.posts({ now: nowIso, limit: 100 }), deps);
+        return boardPage(posts, await store.summary(nowIso));
+      }
       return json(describePiazza(deps.origin));
     }
     if (req.method === "GET" && path === "/v1/summary") return json({ ...(await store.summary(nowIso)), at: nowIso });
     if (req.method === "GET" && path === "/v1/posts") {
       const kind = url.searchParams.get("kind") ?? undefined;
       const category = url.searchParams.get("category") ?? undefined;
-      return json({ notice: NOTICE, posts: (await store.posts({ kind, category, now: nowIso, limit: 100 })).map(viewOf) });
+      return json({ notice: NOTICE, posts: (await dropRevoked(await store.posts({ kind, category, now: nowIso, limit: 100 }), deps)).map(viewOf) });
     }
     const m = path.match(/^\/v1\/posts\/([0-9a-f]{64})$/);
     if (req.method === "GET" && m) {
       const p = await store.post(m[1]);
-      return p ? json(viewOf(p)) : error(404, "post not found");
+      if (!p) return error(404, "post not found");
+      await dropRevoked([p], deps);
+      return json(viewOf((await store.post(p.id))!));
     }
     if (req.method === "GET" && path === "/v1/guide") return json(describeGuide());
     if (req.method === "POST" && (path === "/v1/guide/ask" || path === "/v1/guide/feedback")) {
@@ -204,6 +252,7 @@ export async function handlePiazza(req: Request, deps: PiazzaDeps): Promise<Resp
           status: "active",
           demo: owner.domain === deps.demoDomain,
           registerIndex: null,
+          mandate: env.mandate,
         };
         await store.addPost(p);
         if (deps.seal) {
@@ -218,7 +267,8 @@ export async function handlePiazza(req: Request, deps: PiazzaDeps): Promise<Resp
       }
       if (action?.op === "contact") {
         if (!(REPLIES as readonly string[]).includes(action.reply)) return error(400, `reply must be one of: ${REPLIES.join(", ")}`);
-        const p = await store.post(action.postId);
+        const found = await store.post(action.postId);
+        const p = found && (await dropRevoked([found], deps)).length ? found : null;
         if (!p || p.status !== "active" || p.content.expiresAt <= nowIso) return error(404, "post not found or no longer active");
         if (p.ownerDomain === owner.domain) return error(400, "cannot reply to a post of your own owner");
         if ((await store.countContactsByAgent(agent, dayAgo)) >= LIMITS.contactsPerAgentPerDay) return error(429, "daily reply limit reached");

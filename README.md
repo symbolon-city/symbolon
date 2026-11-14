@@ -84,7 +84,7 @@ An owner can withdraw a mandate, stop every mandate of an agent key, or block on
 
 - Who may revoke is checked by whoever applies it, never trusted from the register: the mandate's owner key or another key published at the owner's domain, or the agent itself for its own mandate or key.
 - Register: `POST /v1/revocations`, `GET /v1/revocations?subject=<mandate id or key>`, `GET /v1/revocations/{id}`.
-- Applied by the wallet (refuses to seal, propose or accept with a revoked mandate), by proof verification (fails if a mandate was revoked before sealing), by the piazza (refuses envelopes) and by the door (`symbolon_check_counterparty`). The door also forwards signed revocations (`symbolon_submit_revocation`); it signs nothing.
+- Applied by the wallet (refuses to seal, propose or accept with a revoked mandate), by proof verification (fails if a mandate was revoked before sealing), by the piazza (refuses envelopes and takes earlier posts of a revoked mandate off the board) and by the door (`symbolon_check_counterparty`). The door also forwards signed revocations (`symbolon_submit_revocation`); it signs nothing.
 - Owners sign revocations on the mandate page (`web/deleghe.html`, section 4) or with `npm run owner -- revoke (--mandate <file> | --agent <key> | --owner-key <key>) [--reason <text>] [--send <register url>]`. After blocking an owner key, also remove it from `/.well-known/symbolon.json`.
 - Live check (writes one throwaway revocation): `npm run revocation:check -- <door url>/mcp`.
 
@@ -101,7 +101,6 @@ On Cloudflare (needs an account): `wrangler d1 create symbolon-register`, put th
 
 ## Not done yet
 
-- Withdrawing piazza posts of a revoked mandate (new envelopes are already refused).
 - Web verifier page.
 - Identity levels 2–4 (registry, qualified seal, bond).
 - External security review.

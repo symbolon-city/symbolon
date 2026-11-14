@@ -56,6 +56,10 @@ export class MemoryPiazzaStore implements PiazzaStore {
     const p = this.postsById.get(id);
     if (p) p.status = "withdrawn";
   }
+  async markRevoked(id: string) {
+    const p = this.postsById.get(id);
+    if (p && p.status === "active") p.status = "revoked";
+  }
   async countPostsByOwner(owner: string, since: string) {
     return [...this.postsById.values()].filter((p) => p.ownerDomain === owner && p.createdAt >= since).length;
   }
@@ -93,7 +97,7 @@ export class MemoryPiazzaStore implements PiazzaStore {
 
 export const PIAZZA_SCHEMA = `
 CREATE TABLE IF NOT EXISTS nonces (nonce TEXT PRIMARY KEY, at TEXT NOT NULL);
-CREATE TABLE IF NOT EXISTS posts (id TEXT PRIMARY KEY, agent TEXT NOT NULL, owner TEXT NOT NULL, kind TEXT NOT NULL, category TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL, expires_at TEXT NOT NULL, status TEXT NOT NULL, demo INTEGER NOT NULL, register_index INTEGER);
+CREATE TABLE IF NOT EXISTS posts (id TEXT PRIMARY KEY, agent TEXT NOT NULL, owner TEXT NOT NULL, kind TEXT NOT NULL, category TEXT NOT NULL, content TEXT NOT NULL, created_at TEXT NOT NULL, expires_at TEXT NOT NULL, status TEXT NOT NULL, demo INTEGER NOT NULL, register_index INTEGER, mandate TEXT);
 CREATE INDEX IF NOT EXISTS posts_owner ON posts(owner, created_at);
 CREATE TABLE IF NOT EXISTS contacts (post_id TEXT NOT NULL, from_agent TEXT NOT NULL, from_owner TEXT NOT NULL, mandate TEXT NOT NULL, reply TEXT NOT NULL, created_at TEXT NOT NULL, PRIMARY KEY (post_id, from_agent));
 CREATE TABLE IF NOT EXISTS daily_stats (day TEXT NOT NULL, kind TEXT NOT NULL, n INTEGER NOT NULL, PRIMARY KEY (day, kind));
@@ -102,7 +106,10 @@ CREATE TABLE IF NOT EXISTS guide_counters (day TEXT NOT NULL, name TEXT NOT NULL
 CREATE TABLE IF NOT EXISTS guide_feedback (at TEXT NOT NULL, tier TEXT NOT NULL, stage TEXT, text TEXT NOT NULL);
 `;
 
-type PostRow = { id: string; agent: string; owner: string; content: string; created_at: string; status: string; demo: number; register_index: number | null };
+/** Changes to tables created before them; each may fail harmlessly if already applied. */
+export const PIAZZA_MIGRATIONS = ["ALTER TABLE posts ADD COLUMN mandate TEXT"];
+
+type PostRow = { id: string; agent: string; owner: string; content: string; created_at: string; status: string; demo: number; register_index: number | null; mandate?: string | null };
 const toPost = (r: PostRow): StoredPost => ({
   id: r.id,
   agent: r.agent,
@@ -112,6 +119,7 @@ const toPost = (r: PostRow): StoredPost => ({
   status: r.status as StoredPost["status"],
   demo: r.demo === 1,
   registerIndex: r.register_index,
+  mandate: r.mandate ? JSON.parse(r.mandate) : null,
 });
 
 export class D1PiazzaStore implements PiazzaStore {
@@ -147,8 +155,8 @@ export class D1PiazzaStore implements PiazzaStore {
   }
   async addPost(p: StoredPost) {
     await this.db
-      .prepare("INSERT INTO posts (id, agent, owner, kind, category, content, created_at, expires_at, status, demo, register_index) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
-      .bind(p.id, p.agent, p.ownerDomain, p.content.kind, p.content.category, JSON.stringify(p.content), p.createdAt, p.content.expiresAt, p.status, p.demo ? 1 : 0, p.registerIndex)
+      .prepare("INSERT INTO posts (id, agent, owner, kind, category, content, created_at, expires_at, status, demo, register_index, mandate) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)")
+      .bind(p.id, p.agent, p.ownerDomain, p.content.kind, p.content.category, JSON.stringify(p.content), p.createdAt, p.content.expiresAt, p.status, p.demo ? 1 : 0, p.registerIndex, p.mandate ? JSON.stringify(p.mandate) : null)
       .run();
   }
   async setRegisterIndex(id: string, index: number) {
@@ -167,6 +175,9 @@ export class D1PiazzaStore implements PiazzaStore {
   }
   async withdraw(id: string) {
     await this.db.prepare("UPDATE posts SET status = 'withdrawn' WHERE id = ?").bind(id).run();
+  }
+  async markRevoked(id: string) {
+    await this.db.prepare("UPDATE posts SET status = 'revoked' WHERE id = ? AND status = 'active'").bind(id).run();
   }
   async countPostsByOwner(owner: string, since: string) {
     const r = await this.db.prepare("SELECT COUNT(*) AS n FROM posts WHERE owner = ? AND created_at >= ?").bind(owner, since).first<{ n: number }>();

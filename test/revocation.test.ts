@@ -165,9 +165,51 @@ test("the piazza refuses envelopes signed under a revoked mandate", async () => 
   const post = { kind: "offer", category: "translation", title: "Italian to English", text: "Short technical translations within two days.", expiresAt: later(7) };
   const send = () =>
     handlePiazza(new Request("https://piazza.example/v1/envelopes", { method: "POST", body: JSON.stringify(signEnvelope(agent, m, "https://piazza.example", { op: "post", post } as any)) }), deps);
-  assert.equal((await send()).status, 201);
+  const created = (await (await send()).json()) as any;
+  const id = created.post.id;
+  const get = async (path: string, d: typeof deps = deps) => (await (await handlePiazza(new Request("https://piazza.example" + path), d)).json()) as any;
+  assert.equal((await get("/v1/posts")).posts.length, 1);
+
   await client.revoke(createRevocation(agent, { target: { kind: "agent", key: agent.publicKey }, reason: "my key leaked" }));
   const refused = await send();
   assert.equal(refused.status, 403);
   assert.match(((await refused.json()) as any).error, /revoked/);
+
+  // Its earlier post leaves the board too (checked again after the cache time).
+  assert.equal((await get("/v1/posts")).posts.length, 1, "still cached as clean");
+  const fresh = { ...deps, revocationCacheMs: 0 };
+  assert.equal((await get("/v1/posts", fresh)).posts.length, 0);
+  assert.equal((await get(`/v1/posts/${id}`, fresh)).status, "revoked");
+  assert.equal((await get("/v1/summary", fresh)).activePosts, 0);
+
+  // A reader cannot reply to it any more.
+  const other = generateKeyPair();
+  const otherOwner = generateKeyPair();
+  const om = createMandate(otherOwner, { ownerDomain: "beta.example", agent: other.publicKey, scope: "piazza", notBefore: later(-1), notAfter: later(30), charter: "accord-charter/0.1" });
+  const reply = await handlePiazza(
+    new Request("https://piazza.example/v1/envelopes", { method: "POST", body: JSON.stringify(signEnvelope(other, om, "https://piazza.example", { op: "contact", postId: id, reply: "interested" } as any)) }),
+    { ...fresh, ownerResolver: staticOwnerResolver({ "alfa.example": [owner.publicKey], "beta.example": [otherOwner.publicKey] }) },
+  );
+  assert.equal(reply.status, 404);
+});
+
+test("the piazza keeps showing posts when the register cannot be reached", async () => {
+  const owner = generateKeyPair();
+  const agent = generateKeyPair();
+  const m = mandateFor(owner, agent.publicKey);
+  let down = false;
+  const { client } = registerSetup();
+  const deps = {
+    store: new MemoryPiazzaStore(),
+    ownerResolver: staticOwnerResolver({ "alfa.example": [owner.publicKey] }),
+    origin: "https://piazza.example",
+    revocations: (s: string[]) => (down ? Promise.reject(new Error("down")) : client.revocations(s)),
+    revocationCacheMs: 0,
+  };
+  const post = { kind: "seek", category: "translation", title: "English to Italian", text: "One page, technical, within a week.", expiresAt: later(7) };
+  const res = await handlePiazza(new Request("https://piazza.example/v1/envelopes", { method: "POST", body: JSON.stringify(signEnvelope(agent, m, "https://piazza.example", { op: "post", post } as any)) }), deps);
+  assert.equal(res.status, 201);
+  down = true;
+  const list = (await (await handlePiazza(new Request("https://piazza.example/v1/posts"), deps)).json()) as any;
+  assert.equal(list.posts.length, 1);
 });
