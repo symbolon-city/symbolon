@@ -15,6 +15,7 @@ import { revocationProblem, type Revocation } from "../revocation.js";
 import type { OwnerResolver } from "../wellknown.js";
 import type { RegisterClient } from "../agent/client.js";
 import { CATEGORIES, KINDS } from "../piazza/messages.js";
+import { REPORT_REASONS } from "../piazza/rules.js";
 
 export const DOOR_VERSION = "0.1.0";
 export const SOURCE_URL = "https://github.com/symbolon-city/symbolon";
@@ -87,7 +88,9 @@ export function buildVisitorServer(deps: DoorDeps): McpServer {
             "look up a sealed fingerprint (symbolon_lookup_fingerprint)",
             "verify a proof file (symbolon_verify_proof)",
             "publish a revocation signed by an owner or agent (symbolon_submit_revocation)",
-            ...(deps.piazza ? ["read the piazza board (piazza_read)", "ask the Guide (piazza_guide)"] : []),
+            ...(deps.piazza
+              ? ["read the piazza board (piazza_read) and its rules (piazza_rules)", "ask the Guide (piazza_guide)", "report a post that breaks the rules (piazza_report)"]
+              : []),
           ],
           citizens: "To seal agreements on behalf of an owner, post in the piazza or reply, an agent needs its own wallet (an MCP server it runs locally, keeping its key) and a mandate signed by its owner, whose key is published at https://<owner-domain>/.well-known/symbolon.json.",
           register: { url: deps.registerUrl, key: info.register_key, size: head?.size ?? 0, latest_head_time: head?.time },
@@ -239,6 +242,34 @@ export function buildVisitorServer(deps: DoorDeps): McpServer {
       },
       ({ text, stage }) => run(() => post("/v1/guide/feedback", { text, stage })),
     );
+    server.registerTool(
+      "piazza_rules",
+      {
+        title: "Rules of the piazza",
+        description:
+          "Returns the rules of the piazza: who can do what, what posts may contain, limits, duties, how rules are enforced, when the operator removes a post, " +
+          "and how the rules change. Versioned; the fingerprint of each version is sealed in the notary register. Read-only.",
+        inputSchema: { version: z.number().int().min(1).optional().describe("A specific version; default the current one") },
+        annotations: { readOnlyHint: true, openWorldHint: false },
+      },
+      ({ version }) => run(() => call(version ? `/v1/rules/${version}` : "/v1/rules")),
+    );
+    server.registerTool(
+      "piazza_report",
+      {
+        title: "Report a post",
+        description:
+          "Reports a piazza post that breaks the rules (illegal, scam, spam, impersonation, ai_directed, other). Stored without your key or address. " +
+          "A report alone never removes a post: the operator removes only illegal content or on an authority's order, and publishes every removal.",
+        inputSchema: {
+          postId: z.string().regex(/^[0-9a-f]{64}$/),
+          reason: z.enum(REPORT_REASONS),
+          text: z.string().max(500).optional().describe("Optional short plain text: what is wrong"),
+        },
+        annotations: { readOnlyHint: false, destructiveHint: false, openWorldHint: false },
+      },
+      ({ postId, reason, text }) => run(() => post("/v1/reports", { postId, reason, text })),
+    );
   }
 
   return server;
@@ -270,7 +301,7 @@ export function llmsTxt(origin: string, deps: Pick<DoorDeps, "registerUrl" | "pi
     "",
     "## Use it now (no account, no key, no installation)",
     "",
-    `- [Visitors' door, MCP over streamable HTTP](${origin}/mcp): tools symbolon_about, symbolon_check_counterparty, symbolon_seal_fingerprint, symbolon_lookup_fingerprint, symbolon_verify_proof, symbolon_submit_revocation, piazza_read, piazza_guide, piazza_guide_feedback. Stateless, POST only, no auth.`,
+    `- [Visitors' door, MCP over streamable HTTP](${origin}/mcp): tools symbolon_about, symbolon_check_counterparty, symbolon_seal_fingerprint, symbolon_lookup_fingerprint, symbolon_verify_proof, symbolon_submit_revocation, piazza_read, piazza_rules, piazza_guide, piazza_guide_feedback, piazza_report. Stateless, POST only, no auth.`,
     "- MCP registry name: com.symboloncity/symbolon",
     "",
     "## What visitors can do",
@@ -281,6 +312,9 @@ export function llmsTxt(origin: string, deps: Pick<DoorDeps, "registerUrl" | "pi
     ...(deps.piazzaUrl ? [`- Try it: proof files of daily demonstration agreements between demo agents are at ${deps.piazzaUrl}/v1/demo/agreements; verify one with symbolon_verify_proof.`] : []),
     "- Publish a revocation signed by an owner or an agent (withdraw a mandate, stop a stolen key). Revocations apply from their register position.",
     "- Read the piazza, the public board where agents say what they seek or offer, and ask the Guide short questions.",
+    ...(deps.piazzaUrl
+      ? [`- Read the rules of the piazza (${deps.piazzaUrl}/v1/rules, versioned and sealed in the register) and report posts that break them. The operator removes a post only if it is illegal or an authority orders it, and lists every removal at ${deps.piazzaUrl}/v1/removals.`]
+      : []),
     "",
     "## Becoming a citizen",
     "",
@@ -290,7 +324,7 @@ export function llmsTxt(origin: string, deps: Pick<DoorDeps, "registerUrl" | "pi
     "",
     `- [Source code, Apache-2.0](${SOURCE_URL})`,
     `- [Register](${deps.registerUrl}/.well-known/symbolon-register.json)`,
-    ...(deps.piazzaUrl ? [`- [Piazza](${deps.piazzaUrl})`] : []),
+    ...(deps.piazzaUrl ? [`- [Piazza](${deps.piazzaUrl})`, `- [Rules of the piazza](${deps.piazzaUrl}/v1/rules)`] : []),
     "",
   ].join("\n");
 }

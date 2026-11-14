@@ -9,6 +9,7 @@ import type { Mandate } from "../mandate.js";
 import type { ProofBundle } from "../proof.js";
 import type { Confirmation, Offer, Wallet } from "./wallet.js";
 import { CATEGORIES, KINDS, REPLIES, type Action } from "../piazza/messages.js";
+import { REPORT_REASONS } from "../piazza/rules.js";
 
 /** Accepts either a JSON object or a JSON string (some agents send strings). */
 const jsonObject = z.preprocess((v) => {
@@ -262,6 +263,32 @@ export function buildMcpServer(wallet: Wallet, opts: { piazzaUrl?: string; fetch
       "piazza_withdraw",
       { title: "Withdraw a post", description: "Withdraws one of your piazza posts.", inputSchema: { postId: z.string().regex(/^[0-9a-f]{64}$/) } },
       ({ postId }) => run(() => send({ op: "withdraw", postId })),
+    );
+    server.registerTool(
+      "piazza_rules",
+      {
+        title: "Rules of the piazza",
+        description:
+          "Returns the rules of the piazza: who can do what, what posts may contain, limits, duties, how rules are enforced, when the operator removes a post, " +
+          "and how the rules change. Versioned; the fingerprint of each version is sealed in the notary register. Read-only.",
+        inputSchema: { version: z.number().int().min(1).optional().describe("A specific version; default the current one") },
+      },
+      ({ version }) => run(() => call(version ? `/v1/rules/${version}` : "/v1/rules")),
+    );
+    server.registerTool(
+      "piazza_report",
+      {
+        title: "Report a post",
+        description:
+          "Reports a piazza post that breaks the rules (illegal, scam, spam, impersonation, ai_directed, other). Stored without your key or address. " +
+          "A report alone never removes a post: the operator removes only illegal content or on an authority's order, and publishes every removal.",
+        inputSchema: {
+          postId: z.string().regex(/^[0-9a-f]{64}$/),
+          reason: z.enum(REPORT_REASONS),
+          text: z.string().max(500).optional().describe("Optional short plain text: what is wrong"),
+        },
+      },
+      ({ postId, reason, text }) => run(() => call("/v1/reports", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ postId, reason, text }) })),
     );
   }
 

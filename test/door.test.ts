@@ -53,6 +53,8 @@ test("the visitors' door offers only keyless tools", async () => {
     "piazza_guide",
     "piazza_guide_feedback",
     "piazza_read",
+    "piazza_report",
+    "piazza_rules",
     "symbolon_about",
     "symbolon_check_counterparty",
     "symbolon_lookup_fingerprint",
@@ -151,7 +153,7 @@ test("over HTTP: stateless MCP at /mcp, description at /", async () => {
 
   const headers = { "mcp-protocol-version": "2025-06-18" };
   const list = (await (await rpc({ jsonrpc: "2.0", id: 2, method: "tools/list" }, headers)).json()) as any;
-  assert.equal(list.result.tools.length, 9);
+  assert.equal(list.result.tools.length, 11);
   const fp = sha("over http");
   const sealed = (await (await rpc({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "symbolon_seal_fingerprint", arguments: { fingerprint: fp } } }, headers)).json()) as any;
   assert.equal(JSON.parse(sealed.result.content[0].text).receipt.index, 0);
@@ -165,4 +167,14 @@ test("over HTTP: stateless MCP at /mcp, description at /", async () => {
   assert.match(text, /^# Symbolon City\n\n> /);
   assert.ok(text.includes(`(${base}/mcp)`));
   assert.equal((await handleDoor(new Request(base + "/nothing"), deps)).status, 404);
+});
+
+test("the door serves the piazza rules and takes reports", async () => {
+  const { deps } = setup();
+  const { call } = await connect(deps);
+  const rules = await call("piazza_rules");
+  assert.equal(rules.document.type, "symbolon/piazza-rules");
+  assert.equal((await call("piazza_rules", { version: 1 })).fingerprint, rules.fingerprint);
+  await assert.rejects(call("piazza_rules", { version: 99 }), /no such version/);
+  await assert.rejects(call("piazza_report", { postId: "0".repeat(64), reason: "spam" }), /post not found/);
 });

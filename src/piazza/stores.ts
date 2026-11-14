@@ -1,7 +1,7 @@
 // Storage of the piazza: in memory for tests, Cloudflare D1 in production.
 
 import type { D1Like } from "../server/stores.js";
-import type { PiazzaStore, StoredContact, StoredPost } from "./app.js";
+import type { PiazzaStore, PiazzaSummary, StoredContact, StoredPost, StoredRemoval, StoredReport } from "./app.js";
 import type { Tier } from "./guide.js";
 
 export class MemoryPiazzaStore implements PiazzaStore {
@@ -54,7 +54,7 @@ export class MemoryPiazzaStore implements PiazzaStore {
   }
   async withdraw(id: string) {
     const p = this.postsById.get(id);
-    if (p) p.status = "withdrawn";
+    if (p && p.status === "active") p.status = "withdrawn";
   }
   private proofs: Array<{ entry: string; at: string; proof: unknown }> = [];
   async addDemoProof(entry: string, at: string, proof: unknown) {
@@ -91,7 +91,27 @@ export class MemoryPiazzaStore implements PiazzaStore {
       .filter((c) => this.postsById.get(c.postId)?.agent === agent)
       .map((c) => ({ ...c, postTitle: this.postsById.get(c.postId)!.content.title }));
   }
-  async summary(now: string) {
+  readonly reports: StoredReport[] = [];
+  private removalsList: StoredRemoval[] = [];
+  private sealedDocs = new Map<string, number>();
+  async addReport(r: StoredReport) {
+    this.reports.push({ ...r });
+  }
+  async addRemoval(r: StoredRemoval) {
+    this.removalsList = [{ ...r }, ...this.removalsList.filter((x) => x.postId !== r.postId)];
+    const p = this.postsById.get(r.postId);
+    if (p) p.status = "removed";
+  }
+  async removals(limit: number) {
+    return [...this.removalsList].sort((a, b) => b.removedAt.localeCompare(a.removedAt)).slice(0, limit);
+  }
+  async sealedDoc(fp: string) {
+    return this.sealedDocs.get(fp) ?? null;
+  }
+  async setSealedDoc(fp: string, index: number) {
+    if (!this.sealedDocs.has(fp)) this.sealedDocs.set(fp, index);
+  }
+  async summary(now: string): Promise<PiazzaSummary> {
     const active = await this.posts({ now, limit: 1e9 });
     return {
       activePosts: active.length,
@@ -99,6 +119,8 @@ export class MemoryPiazzaStore implements PiazzaStore {
       owners: new Set(active.map((p) => p.ownerDomain)).size,
       agents: new Set(active.map((p) => p.agent)).size,
       contacts: this.contacts.length,
+      reports: this.reports.length,
+      removals: this.removalsList.length,
     };
   }
 }
@@ -113,6 +135,9 @@ CREATE TABLE IF NOT EXISTS guide_answers (key TEXT PRIMARY KEY, question TEXT NO
 CREATE TABLE IF NOT EXISTS guide_counters (day TEXT NOT NULL, name TEXT NOT NULL, n INTEGER NOT NULL, PRIMARY KEY (day, name));
 CREATE TABLE IF NOT EXISTS demo_proofs (entry TEXT PRIMARY KEY, at TEXT NOT NULL, proof TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS guide_feedback (at TEXT NOT NULL, tier TEXT NOT NULL, stage TEXT, text TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS reports (post_id TEXT NOT NULL, reason TEXT NOT NULL, text TEXT, tier TEXT NOT NULL, at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS removals (post_id TEXT PRIMARY KEY, owner TEXT NOT NULL, agent TEXT NOT NULL, removed_at TEXT NOT NULL, reason TEXT NOT NULL, basis TEXT NOT NULL, clause TEXT NOT NULL, rules_version INTEGER NOT NULL, fingerprint TEXT NOT NULL, register_index INTEGER, owner_reply TEXT, correction TEXT);
+CREATE TABLE IF NOT EXISTS sealed_docs (fingerprint TEXT PRIMARY KEY, register_index INTEGER NOT NULL, at TEXT NOT NULL);
 `;
 
 /** Changes to tables created before them; each may fail harmlessly if already applied. */
@@ -183,7 +208,7 @@ export class D1PiazzaStore implements PiazzaStore {
     return r.results.map(toPost);
   }
   async withdraw(id: string) {
-    await this.db.prepare("UPDATE posts SET status = 'withdrawn' WHERE id = ?").bind(id).run();
+    await this.db.prepare("UPDATE posts SET status = 'withdrawn' WHERE id = ? AND status = 'active'").bind(id).run();
   }
   async addDemoProof(entry: string, at: string, proof: unknown) {
     await this.db.prepare("INSERT OR IGNORE INTO demo_proofs (entry, at, proof) VALUES (?, ?, ?)").bind(entry, at, JSON.stringify(proof)).run();
@@ -240,11 +265,93 @@ export class D1PiazzaStore implements PiazzaStore {
       postTitle: JSON.parse(x.post_content).title,
     }));
   }
-  async summary(now: string) {
+  async summary(now: string): Promise<PiazzaSummary> {
     const r = await this.db
-      .prepare("SELECT COUNT(*) AS posts, COALESCE(SUM(demo), 0) AS demo, COUNT(DISTINCT owner) AS owners, COUNT(DISTINCT agent) AS agents, (SELECT COUNT(*) FROM contacts) AS contacts FROM posts WHERE status = 'active' AND expires_at > ?")
+      .prepare(
+        "SELECT COUNT(*) AS posts, COALESCE(SUM(demo), 0) AS demo, COUNT(DISTINCT owner) AS owners, COUNT(DISTINCT agent) AS agents, " +
+          "(SELECT COUNT(*) FROM contacts) AS contacts, (SELECT COUNT(*) FROM reports) AS reports, (SELECT COUNT(*) FROM removals) AS removals " +
+          "FROM posts WHERE status = 'active' AND expires_at > ?",
+      )
       .bind(now)
-      .first<{ posts: number; demo: number; owners: number; agents: number; contacts: number }>();
-    return { activePosts: r?.posts ?? 0, demoPosts: r?.demo ?? 0, owners: r?.owners ?? 0, agents: r?.agents ?? 0, contacts: r?.contacts ?? 0 };
+      .first<{ posts: number; demo: number; owners: number; agents: number; contacts: number; reports: number; removals: number }>();
+    return {
+      activePosts: r?.posts ?? 0,
+      demoPosts: r?.demo ?? 0,
+      owners: r?.owners ?? 0,
+      agents: r?.agents ?? 0,
+      contacts: r?.contacts ?? 0,
+      reports: r?.reports ?? 0,
+      removals: r?.removals ?? 0,
+    };
   }
+  async addReport(r: StoredReport) {
+    await this.db.prepare("INSERT INTO reports (post_id, reason, text, tier, at) VALUES (?, ?, ?, ?, ?)").bind(r.postId, r.reason, r.text, r.tier, r.at).run();
+  }
+  async addRemoval(r: StoredRemoval) {
+    await this.db.batch(removalStatements(r).map(([sql, ...values]) => this.db.prepare(sql as string).bind(...values)));
+  }
+  async removals(limit: number) {
+    const r = await this.db.prepare("SELECT * FROM removals ORDER BY removed_at DESC LIMIT ?").bind(limit).all<RemovalRow>();
+    return r.results.map((x) => ({
+      postId: x.post_id,
+      ownerDomain: x.owner,
+      agent: x.agent,
+      removedAt: x.removed_at,
+      reason: x.reason as StoredRemoval["reason"],
+      basis: x.basis,
+      clause: x.clause,
+      rulesVersion: x.rules_version,
+      fingerprint: x.fingerprint,
+      registerIndex: x.register_index,
+      ownerReply: x.owner_reply,
+      correction: x.correction,
+    }));
+  }
+  async sealedDoc(fp: string) {
+    const r = await this.db.prepare("SELECT register_index FROM sealed_docs WHERE fingerprint = ?").bind(fp).first<{ register_index: number }>();
+    return r?.register_index ?? null;
+  }
+  async setSealedDoc(fp: string, index: number, at: string) {
+    await this.db.prepare("INSERT OR IGNORE INTO sealed_docs (fingerprint, register_index, at) VALUES (?, ?, ?)").bind(fp, index, at).run();
+  }
+}
+
+type RemovalRow = {
+  post_id: string;
+  owner: string;
+  agent: string;
+  removed_at: string;
+  reason: string;
+  basis: string;
+  clause: string;
+  rules_version: number;
+  fingerprint: string;
+  register_index: number | null;
+  owner_reply: string | null;
+  correction: string | null;
+};
+
+/** The statements that record a removal and take the post off the board, as [sql, ...values]. */
+export function removalStatements(r: StoredRemoval): unknown[][] {
+  return [
+    [
+      "INSERT OR REPLACE INTO removals (post_id, owner, agent, removed_at, reason, basis, clause, rules_version, fingerprint, register_index, owner_reply, correction) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      r.postId, r.ownerDomain, r.agent, r.removedAt, r.reason, r.basis, r.clause, r.rulesVersion, r.fingerprint, r.registerIndex, r.ownerReply, r.correction,
+    ],
+    ["UPDATE posts SET status = 'removed' WHERE id = ?", r.postId],
+  ];
+}
+
+/** The same statements as plain SQL text, for `wrangler d1 execute --file` (scripts/piazza-remove.ts). */
+export function toSqlText(statements: unknown[][]): string {
+  const lit = (v: unknown) =>
+    v === null || v === undefined ? "NULL" : typeof v === "number" && Number.isSafeInteger(v) ? String(v) : "'" + String(v).replace(/'/g, "''") + "'";
+  return (
+    statements
+      .map(([sql, ...values]) => {
+        let i = 0;
+        return (sql as string).replace(/\?/g, () => lit(values[i++])) + ";";
+      })
+      .join("\n") + "\n"
+  );
 }

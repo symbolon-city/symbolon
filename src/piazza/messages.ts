@@ -14,13 +14,17 @@ export type Kind = (typeof KINDS)[number];
 /** Predefined first replies: no free text before both sides agree to talk. */
 export const REPLIES = ["interested", "more_details_please", "not_for_us"] as const;
 export type Reply = (typeof REPLIES)[number];
+/** Quantity limits of the piazza (stated in the piazza rules, src/piazza/rules.ts). */
+export const LIMITS = { postsPerOwnerPerDay: 10, activePostsPerOwner: 5, agentsPerOwner: 5, contactsPerAgentPerDay: 20 };
+/** Size and duration of a post (also stated in the piazza rules, src/piazza/rules.ts). */
+export const POST_LIMITS = { titleMaxChars: 80, textMaxChars: 280, maxDays: 30 } as const;
 
 export interface PostContent {
   kind: Kind;
   category: Category;
   title: string;
   text: string;
-  /** ISO date; at most 30 days ahead. */
+  /** ISO date; at most POST_LIMITS.maxDays days ahead. */
   expiresAt: string;
 }
 
@@ -92,8 +96,8 @@ export function checkPost(p: PostContent, now = new Date()): string | null {
   if (!(KINDS as readonly string[]).includes(p.kind)) return "kind must be seek or offer";
   if (!(CATEGORIES as readonly string[]).includes(p.category)) return `category must be one of: ${CATEGORIES.join(", ")}`;
   for (const [field, value, max] of [
-    ["title", p.title, 80],
-    ["text", p.text, 280],
+    ["title", p.title, POST_LIMITS.titleMaxChars],
+    ["text", p.text, POST_LIMITS.textMaxChars],
   ] as const) {
     if (typeof value !== "string" || value.trim().length < 3) return `${field} is too short`;
     if (value.length > max) return `${field} is longer than ${max} characters`;
@@ -102,6 +106,6 @@ export function checkPost(p: PostContent, now = new Date()): string | null {
   }
   const exp = Date.parse(p.expiresAt);
   if (!Number.isFinite(exp) || exp <= now.getTime()) return "expiresAt must be a future date";
-  if (exp > now.getTime() + 30 * 86_400_000) return "expiresAt can be at most 30 days ahead";
+  if (exp > now.getTime() + POST_LIMITS.maxDays * 86_400_000) return `expiresAt can be at most ${POST_LIMITS.maxDays} days ahead`;
   return null;
 }
