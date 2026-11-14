@@ -88,6 +88,7 @@ export class MemoryPiazzaStore implements PiazzaStore {
     const active = await this.posts({ now, limit: 1e9 });
     return {
       activePosts: active.length,
+      demoPosts: active.filter((p) => p.demo).length,
       owners: new Set(active.map((p) => p.ownerDomain)).size,
       agents: new Set(active.map((p) => p.agent)).size,
       contacts: this.contacts.length,
@@ -226,9 +227,9 @@ export class D1PiazzaStore implements PiazzaStore {
   }
   async summary(now: string) {
     const r = await this.db
-      .prepare("SELECT COUNT(*) AS posts, COUNT(DISTINCT owner) AS owners, COUNT(DISTINCT agent) AS agents, (SELECT COUNT(*) FROM contacts) AS contacts FROM posts WHERE status = 'active' AND expires_at > ?")
+      .prepare("SELECT COUNT(*) AS posts, COALESCE(SUM(demo), 0) AS demo, COUNT(DISTINCT owner) AS owners, COUNT(DISTINCT agent) AS agents, (SELECT COUNT(*) FROM contacts) AS contacts FROM posts WHERE status = 'active' AND expires_at > ?")
       .bind(now)
-      .first<{ posts: number; owners: number; agents: number; contacts: number }>();
-    return { activePosts: r?.posts ?? 0, owners: r?.owners ?? 0, agents: r?.agents ?? 0, contacts: r?.contacts ?? 0 };
+      .first<{ posts: number; demo: number; owners: number; agents: number; contacts: number }>();
+    return { activePosts: r?.posts ?? 0, demoPosts: r?.demo ?? 0, owners: r?.owners ?? 0, agents: r?.agents ?? 0, contacts: r?.contacts ?? 0 };
   }
 }

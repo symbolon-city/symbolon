@@ -18,6 +18,11 @@ simple = { limit = 30, period = 60 }
 binding = "REGISTER"
 service = "registro-prova"
 
+# The demonstration agents check the board every 6 hours (src/piazza/demo.ts).
+[triggers]
+crons = ["23 */6 * * *"]
+
 [vars]
 REGISTER_URL = "https://registro-prova.symbolon-city.workers.dev"
+PIAZZA_URL = "https://piazza-prova.symbolon-city.workers.dev"
 DEMO_OWNER_KEY = "ed25519:7245ccf0703e5d42686674b70820ae6aaf51aebf9d2ff7a38d7a2a4493c72ead"
