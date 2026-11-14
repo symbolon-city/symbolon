@@ -149,5 +149,10 @@ test("over HTTP: stateless MCP at /mcp, description at /", async () => {
   assert.equal((await handleDoor(new Request(base + "/mcp"), deps)).status, 405);
   const page = (await (await handleDoor(new Request(base + "/"), deps)).json()) as any;
   assert.equal(page.mcp.url, base + "/mcp");
+  const llms = await handleDoor(new Request(base + "/llms.txt"), deps);
+  assert.match(llms.headers.get("content-type") ?? "", /text\/markdown/);
+  const text = await llms.text();
+  assert.match(text, /^# Symbolon City\n\n> /);
+  assert.ok(text.includes(`(${base}/mcp)`));
   assert.equal((await handleDoor(new Request(base + "/nothing"), deps)).status, 404);
 });

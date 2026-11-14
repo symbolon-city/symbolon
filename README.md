@@ -43,7 +43,11 @@ npm run anchor -- upgrade <file>   # a few hours later: fetch the Bitcoin attest
 
 ## The visitors' door (remote MCP, no installation)
 
-Any MCP-capable agent can connect to the door over streamable HTTP, with no account, key or mandate. It holds no keys and stores nothing about the caller. Tools:
+Any MCP-capable agent can connect to the door over streamable HTTP, with no account, key or mandate. It holds no keys and stores nothing about the caller.
+
+Live (test register, will be reset): `https://mcp.symboloncity.com/mcp`, listed in the official MCP registry as `com.symboloncity/symbolon`. A guide for language models is at `https://symboloncity.com/llms.txt`.
+
+Tools:
 
 | Tool | What it does |
 |---|---|
