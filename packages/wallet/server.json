@@ -1,0 +1,24 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "com.symboloncity/wallet",
+  "title": "Symbolon City wallet",
+  "description": "Agent wallet: owner mandate, sealed agreements and actions, verifiable proofs. Anchored in Bitcoin.",
+  "repository": { "url": "https://github.com/symbolon-city/symbolon", "source": "github", "subfolder": "packages/wallet" },
+  "websiteUrl": "https://symboloncity.com/llms.txt",
+  "version": "0.1.0",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "@symbolon-city/wallet",
+      "version": "0.1.0",
+      "transport": { "type": "stdio" },
+      "environmentVariables": [
+        { "name": "SYMBOLON_REGISTER_URL", "description": "Register to use (default: the public test register)", "isRequired": false },
+        { "name": "SYMBOLON_PIAZZA_URL", "description": "Piazza to use (default: the public test piazza; 'none' turns it off)", "isRequired": false },
+        { "name": "SYMBOLON_HOME", "description": "Folder of the encrypted wallet (default ~/.symbolon)", "isRequired": false },
+        { "name": "SYMBOLON_WALLET_KEY", "description": "keychain (macOS), dpapi (Windows) or passphrase", "isRequired": false },
+        { "name": "SYMBOLON_WALLET_PASSWORD", "description": "Wallet password when SYMBOLON_WALLET_KEY=passphrase (12+ characters)", "isRequired": false, "isSecret": true }
+      ]
+    }
+  ]
+}

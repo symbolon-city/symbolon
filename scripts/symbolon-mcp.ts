@@ -1,8 +1,8 @@
-// The agent's notary wallet as an MCP server over stdio.
-//   SYMBOLON_REGISTER_URL  register to use (required)
-//   PIAZZA_URL           piazza to use (optional: without it the piazza tools are not offered)
+// The agent's notary wallet as an MCP server over stdio (also published as the npm package @symbolon-city/wallet).
+//   SYMBOLON_REGISTER_URL  register to use (default: the public test register of Symbolon City)
+//   SYMBOLON_PIAZZA_URL    piazza to use (default: the public test piazza; "none" turns the piazza tools off). PIAZZA_URL is still read.
 //   SYMBOLON_HOME          where the wallet is kept (default ~/.symbolon; an existing ~/.accord is still used)
-//   SYMBOLON_WALLET_KEY  keychain (Mac, default) | dpapi (Windows, default) | passphrase (default elsewhere)
+//   SYMBOLON_WALLET_KEY    keychain (Mac, default) | dpapi (Windows, default) | passphrase (default elsewhere)
 //   SYMBOLON_WALLET_PASSWORD  the password, when SYMBOLON_WALLET_KEY=passphrase
 import { existsSync } from "node:fs";
 import { homedir } from "node:os";
@@ -14,11 +14,12 @@ import { buildMcpServer } from "../src/agent/mcp.js";
 import { Wallet } from "../src/agent/wallet.js";
 import { esploraProvider, httpOwnerResolver } from "../src/index.js";
 
-const url = process.env.SYMBOLON_REGISTER_URL ?? process.env.ACCORD_REGISTER_URL; // earlier name still accepted
-if (!url) {
-  console.error("Set SYMBOLON_REGISTER_URL to the register address.");
-  process.exit(1);
-}
+export const DEFAULT_REGISTER_URL = "https://registro-prova.symbolon-city.workers.dev";
+export const DEFAULT_PIAZZA_URL = "https://piazza-prova.symbolon-city.workers.dev";
+
+const url = process.env.SYMBOLON_REGISTER_URL ?? process.env.ACCORD_REGISTER_URL ?? DEFAULT_REGISTER_URL; // earlier name still accepted
+const piazzaSetting = process.env.SYMBOLON_PIAZZA_URL ?? process.env.PIAZZA_URL ?? DEFAULT_PIAZZA_URL;
+const piazzaUrl = piazzaSetting === "none" ? undefined : piazzaSetting;
 const legacyHome = join(homedir(), ".accord");
 const home =
   process.env.SYMBOLON_HOME ??
@@ -42,5 +43,5 @@ try {
   console.error((e as Error).message);
   process.exit(1);
 }
-await buildMcpServer(wallet, { piazzaUrl: process.env.PIAZZA_URL }).connect(new StdioServerTransport());
-console.error(`Symbolon wallet ready. Agent key: ${wallet.agentKey}`);
+await buildMcpServer(wallet, { piazzaUrl }).connect(new StdioServerTransport());
+console.error(`Symbolon wallet ready. Agent key: ${wallet.agentKey}. Register: ${url}${piazzaUrl ? `, piazza: ${piazzaUrl}` : ""}`);

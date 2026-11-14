@@ -3,3 +3,6 @@ node_modules/
 .wrangler/
 owner.json
 dist/
+packages/wallet/dist/
+packages/wallet/LICENSE
+packages/wallet/*.tgz
