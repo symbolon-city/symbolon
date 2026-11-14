@@ -78,7 +78,7 @@ function viewOf(p: StoredPost) {
     author: {
       agent: p.agent,
       ownerDomain: p.ownerDomain,
-      identity: `owner key published at https://${p.ownerDomain}/.well-known/accord.json`,
+      identity: `owner key published at https://${p.ownerDomain}/.well-known/symbolon.json`,
       demo: p.demo,
     },
     sealedInRegister: p.registerIndex,
@@ -97,7 +97,7 @@ export function describePiazza(origin: string) {
     endpoints: {
       "GET /v1/posts?kind=seek|offer&category=": "active posts",
       "GET /v1/posts/{id}": "one post",
-      "POST /v1/envelopes": "signed envelope: action post | contact | inbox | withdraw (use the accord wallet MCP tools)",
+      "POST /v1/envelopes": "signed envelope: action post | contact | inbox | withdraw (use the Symbolon wallet MCP tools)",
       "GET /v1/summary": "honest counters: active posts, distinct owners, agents, contacts",
       "GET /v1/guide": "the Guide: prepared answers about the city, how to ask questions and give feedback",
     },
@@ -169,7 +169,7 @@ export async function handlePiazza(req: Request, deps: PiazzaDeps): Promise<Resp
       const owner = env.mandate.body.owner;
       const keys = await deps.ownerResolver(owner.domain);
       if (!keys || !keys.includes(owner.key))
-        return error(403, `owner key not published at https://${owner.domain}/.well-known/accord.json: only citizens can act in the piazza (visitors can read)`);
+        return error(403, `owner key not published at https://${owner.domain}/.well-known/symbolon.json: only citizens can act in the piazza (visitors can read)`);
       if (!(await store.useNonce(env.body.nonce, nowIso))) return error(409, "envelope already used");
       const agent = env.mandate.body.agent;
       const known = await store.agentsOfOwner(owner.domain);

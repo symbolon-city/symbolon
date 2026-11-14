@@ -13,6 +13,7 @@ import { createRecord, entryHash, isFullySigned, signRecord, type SignedRecord }
 import type { Receipt } from "../register.js";
 import type { OwnerResolver } from "../wellknown.js";
 import type { RegisterClient } from "./client.js";
+import { checkMandate, type CounterpartyCheck } from "../counterparty.js";
 import { signEnvelope, type Action, type Envelope } from "../piazza/messages.js";
 
 export interface StoredRecord {
@@ -61,15 +62,7 @@ export interface Confirmation {
   receipt: Receipt;
 }
 
-export interface CounterpartyCheck {
-  ok: boolean;
-  owner: string;
-  level: "unverified" | "domain";
-  scope: string;
-  maxAmount?: Amount;
-  validUntil: string;
-  problems: string[];
-}
+export type { CounterpartyCheck } from "../counterparty.js";
 
 export interface WalletOptions {
   ownerResolver?: OwnerResolver;
@@ -142,25 +135,8 @@ export class Wallet {
     return check;
   }
 
-  async checkCounterparty(m: Mandate): Promise<CounterpartyCheck> {
-    const problems: string[] = [];
-    if (!verifyMandateSignature(m)) problems.push("mandate signature is invalid");
-    if (!withinValidity(m, this.now().toISOString())) problems.push("mandate is not valid now");
-    let level: CounterpartyCheck["level"] = "unverified";
-    if (this.opts.ownerResolver) {
-      const keys = await this.opts.ownerResolver(m.body.owner.domain);
-      if (keys?.includes(m.body.owner.key)) level = "domain";
-      else problems.push(`owner key not published by ${m.body.owner.domain}`);
-    }
-    return {
-      ok: problems.length === 0,
-      owner: m.body.owner.domain,
-      level,
-      scope: m.body.scope,
-      maxAmount: m.body.maxAmount,
-      validUntil: m.body.notAfter,
-      problems,
-    };
+  checkCounterparty(m: Mandate): Promise<CounterpartyCheck> {
+    return checkMandate(m, { ownerResolver: this.opts.ownerResolver, now: this.now() });
   }
 
   /** Seals what this agent was asked and what it did. */

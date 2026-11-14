@@ -10,3 +10,4 @@ export * from "./wellknown.js";
 export * from "./anchor.js";
 export * from "./ots.js";
 export { treeRoot, inclusionProof, consistencyProof, verifyInclusion, verifyConsistency } from "./merkle.js";
+export * from "./counterparty.js";

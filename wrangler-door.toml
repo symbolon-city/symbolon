@@ -1,0 +1,23 @@
+name = "porta-prova"
+main = "worker/door-worker.ts"
+compatibility_date = "2026-10-01"
+compatibility_flags = ["nodejs_compat"]
+
+# The visitors' door talks to the register and the piazza through service bindings.
+[[services]]
+binding = "REGISTER"
+service = "registro-prova"
+
+[[services]]
+binding = "PIAZZA"
+service = "piazza-prova"
+
+# Anti-spam: at most 60 MCP calls per minute per client.
+[[ratelimits]]
+name = "DOOR_LIMIT"
+namespace_id = "1003"
+simple = { limit = 60, period = 60 }
+
+[vars]
+REGISTER_URL = "https://registro-prova.symbolon-city.workers.dev"
+PIAZZA_URL = "https://piazza-prova.symbolon-city.workers.dev"

@@ -55,28 +55,28 @@ test("two agents agree through MCP, and a third party verifies the proof", async
     await c.connect(b);
     return c.listTools();
   })()).tools.map((t) => t.name);
-  assert.ok(tools.includes("accord_propose_agreement") && tools.includes("accord_verify_proof"));
+  assert.ok(tools.includes("symbolon_propose_agreement") && tools.includes("symbolon_verify_proof"));
 
-  await buyer.call("accord_install_mandate", { mandate: buyer.mandate });
-  await seller.call("accord_install_mandate", { mandate: JSON.stringify(seller.mandate) }); // strings accepted too
+  await buyer.call("symbolon_install_mandate", { mandate: buyer.mandate });
+  await seller.call("symbolon_install_mandate", { mandate: JSON.stringify(seller.mandate) }); // strings accepted too
 
-  const sellerMandate = (await seller.call("accord_my_mandate")) as Mandate;
-  const check = await buyer.call("accord_check_counterparty", { mandate: sellerMandate });
+  const sellerMandate = (await seller.call("symbolon_my_mandate")) as Mandate;
+  const check = await buyer.call("symbolon_check_counterparty", { mandate: sellerMandate });
   assert.equal(check.ok, true);
   assert.equal(check.level, "domain");
 
-  const offer = await buyer.call("accord_propose_agreement", {
+  const offer = await buyer.call("symbolon_propose_agreement", {
     counterparty_mandate: sellerMandate,
     clauses: { object: "10000 boxes of A4 paper", amount: { value: "42000.00", currency: "EUR" }, delivery: "2026-12-10" },
   });
-  const accepted = await seller.call("accord_accept_agreement", { offer });
+  const accepted = await seller.call("symbolon_accept_agreement", { offer });
   assert.equal(accepted.counterparty.owner, "alfa.example");
-  const confirmed = await buyer.call("accord_confirm_agreement", { confirmation: accepted.confirmation });
+  const confirmed = await buyer.call("symbolon_confirm_agreement", { confirmation: accepted.confirmation });
   assert.equal(confirmed.entry, accepted.entry);
 
-  const proof = await buyer.call("accord_create_proof", { entry: accepted.entry, reveal: ["delivery"] });
+  const proof = await buyer.call("symbolon_create_proof", { entry: accepted.entry, reveal: ["delivery"] });
   assert.equal(proof.disclosures.length, 1);
-  const report = await seller.call("accord_verify_proof", { proof });
+  const report = await seller.call("symbolon_verify_proof", { proof });
   assert.equal(report.valid, true, JSON.stringify(report.checks.filter((c: { ok: boolean }) => !c.ok)));
   assert.deepEqual(report.disclosed, { delivery: "2026-12-10" });
 });
@@ -86,10 +86,10 @@ test("an offer above the buyer's limit is refused by the buyer's own wallet", as
   const table: Record<string, string[]> = {};
   const buyer = await agentWithOwner("alfa.example", client, table, "1000.00");
   const seller = await agentWithOwner("beta.example", client, table);
-  await buyer.call("accord_install_mandate", { mandate: buyer.mandate });
-  await seller.call("accord_install_mandate", { mandate: seller.mandate });
+  await buyer.call("symbolon_install_mandate", { mandate: buyer.mandate });
+  await seller.call("symbolon_install_mandate", { mandate: seller.mandate });
   await assert.rejects(
-    buyer.call("accord_propose_agreement", { counterparty_mandate: seller.mandate, clauses: { amount: { value: "5000.00", currency: "EUR" } } }),
+    buyer.call("symbolon_propose_agreement", { counterparty_mandate: seller.mandate, clauses: { amount: { value: "5000.00", currency: "EUR" } } }),
     /exceeds the mandate/,
   );
 });
@@ -99,26 +99,26 @@ test("a tampered offer is refused by the accepting agent", async () => {
   const table: Record<string, string[]> = {};
   const buyer = await agentWithOwner("alfa.example", client, table);
   const seller = await agentWithOwner("beta.example", client, table);
-  await buyer.call("accord_install_mandate", { mandate: buyer.mandate });
-  await seller.call("accord_install_mandate", { mandate: seller.mandate });
-  const offer = await buyer.call("accord_propose_agreement", { counterparty_mandate: seller.mandate, clauses: { price: "10", delivery: "tomorrow" } });
+  await buyer.call("symbolon_install_mandate", { mandate: buyer.mandate });
+  await seller.call("symbolon_install_mandate", { mandate: seller.mandate });
+  const offer = await buyer.call("symbolon_propose_agreement", { counterparty_mandate: seller.mandate, clauses: { price: "10", delivery: "tomorrow" } });
   offer.opened.clauses[0].value = "1";
-  await assert.rejects(seller.call("accord_accept_agreement", { offer }), /clauses do not match/);
+  await assert.rejects(seller.call("symbolon_accept_agreement", { offer }), /clauses do not match/);
 });
 
 test("an agent seals its own action and proves it later", async () => {
   const client = registerClient();
   const agent = await agentWithOwner("spray.example", client, {});
-  await assert.rejects(agent.call("accord_seal_action", { instruction: "x", action: "y" }), /no mandate/);
-  await agent.call("accord_install_mandate", { mandate: agent.mandate });
-  const sealed = await agent.call("accord_seal_action", {
+  await assert.rejects(agent.call("symbolon_seal_action", { instruction: "x", action: "y" }), /no mandate/);
+  await agent.call("symbolon_install_mandate", { mandate: agent.mandate });
+  const sealed = await agent.call("symbolon_seal_action", {
     instruction: "Refund order 1043 if the parcel is lost",
     action: "Refunded 39.90 EUR on order 1043",
   });
-  const list = await agent.call("accord_list_records");
+  const list = await agent.call("symbolon_list_records");
   assert.equal(list[0].entry, sealed.entry);
-  const proof = await agent.call("accord_create_proof", { entry: sealed.entry, reveal: ["action"] });
-  const report = await agent.call("accord_verify_proof", { proof });
+  const proof = await agent.call("symbolon_create_proof", { entry: sealed.entry, reveal: ["action"] });
+  const report = await agent.call("symbolon_verify_proof", { proof });
   assert.equal(report.valid, true);
 });
 
@@ -126,5 +126,5 @@ test("a mandate for another agent cannot be installed", async () => {
   const client = registerClient();
   const a = await agentWithOwner("a.example", client, {});
   const b = await agentWithOwner("b.example", client, {});
-  await assert.rejects(a.call("accord_install_mandate", { mandate: b.mandate }), /different agent/);
+  await assert.rejects(a.call("symbolon_install_mandate", { mandate: b.mandate }), /different agent/);
 });

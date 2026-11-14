@@ -42,7 +42,7 @@ async function copy(text: string, btn: HTMLButtonElement, area?: HTMLTextAreaEle
 }
 
 function wellKnown(o: Owner) {
-  return JSON.stringify({ accord: 1, domain: o.domain, keys: [o.publicKey] }, null, 2);
+  return JSON.stringify({ symbolon: 1, domain: o.domain, keys: [o.publicKey] }, null, 2);
 }
 
 function render() {
@@ -55,7 +55,7 @@ function render() {
     $("owner-domain").textContent = owner.domain;
     $("owner-key").textContent = owner.publicKey;
     $<HTMLTextAreaElement>("wellknown").value = wellKnown(owner);
-    $("wellknown-url").textContent = `https://${owner.domain}/.well-known/accord.json`;
+    $("wellknown-url").textContent = `https://${owner.domain}/.well-known/symbolon.json`;
   }
 }
 
@@ -129,7 +129,7 @@ $("mandate-form").addEventListener("submit", (e) => {
   const currency = $<HTMLSelectElement>("currency").value;
   const days = Number($<HTMLSelectElement>("days").value);
   const problems: string[] = [];
-  if (!/^ed25519:[0-9a-f]{64}$/.test(agent)) problems.push("Il codice dell'agente deve iniziare con ed25519: seguito da 64 caratteri (lo mostra l'agente con accord_whoami).");
+  if (!/^ed25519:[0-9a-f]{64}$/.test(agent)) problems.push("Il codice dell'agente deve iniziare con ed25519: seguito da 64 caratteri (lo mostra l'agente con symbolon_whoami).");
   if (!scope) problems.push("Scrivi cosa può fare l'agente.");
   if (max && !/^\d+(\.\d{1,2})?$/.test(max)) problems.push("Il limite di spesa deve essere un numero, per esempio 500 oppure 1250.50.");
   if (problems.length) {
@@ -183,7 +183,7 @@ $("verify-form").addEventListener("submit", (e) => {
       `Limite: ${b.maxAmount ? `${b.maxAmount.value} ${b.maxAmount.currency}` : "nessuno"}`,
       `Valida fino al ${new Date(b.notAfter).toLocaleDateString("it-IT")}`,
       `Codice della delega: ${mandateId(m).slice(0, 16)}…`,
-      `Resta da controllare che la chiave del padrone sia pubblicata su https://${b.owner.domain}/.well-known/accord.json`,
+      `Resta da controllare che la chiave del padrone sia pubblicata su https://${b.owner.domain}/.well-known/symbolon.json`,
     ];
     for (const l of lines) {
       const p = document.createElement("p");

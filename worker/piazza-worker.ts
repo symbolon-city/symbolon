@@ -1,6 +1,6 @@
 // Cloudflare Worker of the piazza (separate from the notary register).
 // Bindings: DB (D1), REGISTER_URL (notary register), DEMO_OWNER_KEY (optional: owner key of the
-// declared demonstration agents, published at this piazza's own /.well-known/accord.json),
+// declared demonstration agents, published at this piazza's own /.well-known/symbolon.json, also served at the earlier accord.json path),
 // ENVELOPE_LIMIT (rate limiter per client).
 
 import { httpOwnerResolver, type OwnerResolver } from "../src/wellknown.js";
@@ -40,9 +40,9 @@ function resolver(env: Env, host: string): OwnerResolver {
 export default {
   async fetch(req: Request, env: Env, ctx: { waitUntil(p: Promise<unknown>): void }): Promise<Response> {
     const url = new URL(req.url);
-    if (url.pathname === "/.well-known/accord.json") {
+    if (url.pathname === "/.well-known/symbolon.json" || url.pathname === "/.well-known/accord.json") {
       if (!env.DEMO_OWNER_KEY) return new Response("Not found", { status: 404 });
-      return Response.json({ accord: 1, domain: url.host, keys: [env.DEMO_OWNER_KEY], note: "demonstration agents of the piazza, declared as such" });
+      return Response.json({ symbolon: 1, accord: 1, domain: url.host, keys: [env.DEMO_OWNER_KEY], note: "demonstration agents of the piazza, declared as such" });
     }
     if (req.method === "POST" && env.ENVELOPE_LIMIT) {
       const ok = (await env.ENVELOPE_LIMIT.limit({ key: req.headers.get("cf-connecting-ip") ?? "unknown" })).success;

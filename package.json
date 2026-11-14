@@ -8,13 +8,14 @@
     "typecheck": "tsc --noEmit",
     "anchor": "NODE_USE_ENV_PROXY=1 NODE_NO_WARNINGS=1 tsx scripts/anchor-live.ts",
     "capture-fixture": "NODE_USE_ENV_PROXY=1 NODE_NO_WARNINGS=1 tsx scripts/capture-fixture.ts",
-    "mcp": "NODE_USE_ENV_PROXY=1 NODE_NO_WARNINGS=1 tsx scripts/accord-mcp.ts",
+    "mcp": "NODE_USE_ENV_PROXY=1 NODE_NO_WARNINGS=1 tsx scripts/symbolon-mcp.ts",
     "mcp:check": "NODE_USE_ENV_PROXY=1 NODE_NO_WARNINGS=1 tsx scripts/mcp-live-check.ts",
     "piazza:check": "NODE_USE_ENV_PROXY=1 NODE_NO_WARNINGS=1 tsx scripts/piazza-live-check.ts",
     "owner": "tsx scripts/owner.ts",
     "register:local": "tsx scripts/register-local.ts",
     "build:web": "tsx scripts/build-web.ts",
-    "build:seal-lite": "esbuild src/seal-lite.ts --bundle --format=esm --platform=neutral --target=es2022 --outfile=dist/symbolon-seal-lite.js"
+    "build:seal-lite": "esbuild src/seal-lite.ts --bundle --format=esm --platform=neutral --target=es2022 --outfile=dist/symbolon-seal-lite.js",
+    "door:check": "tsx scripts/door-live-check.ts"
   },
   "license": "Apache-2.0",
   "dependencies": {

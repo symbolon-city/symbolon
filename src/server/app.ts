@@ -67,7 +67,7 @@ function intParam(v: string | null, name: string): number {
 
 export function describe(deps: AppDeps) {
   return {
-    service: "Accord register (prototype)",
+    service: "Symbolon register (prototype)",
     about:
       "A neutral, append-only register of fingerprints of agreements between AI agents and of actions sealed by a single agent. " +
       "It never receives the content of an agreement, only a SHA-256 fingerprint computed by the parties. " +
@@ -111,7 +111,7 @@ async function route(req: Request, deps: AppDeps): Promise<Response> {
   try {
     if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: CORS });
 
-    if (req.method === "GET" && (path === "/" || path === "/.well-known/accord-register.json")) return json(describe(deps));
+    if (req.method === "GET" && (path === "/" || path === "/.well-known/symbolon-register.json" || path === "/.well-known/accord-register.json")) return json(describe(deps));
 
     if (req.method === "GET" && (path === "/stats" || path === "/v1/stats")) {
       if (!deps.stats) return error(404, "stats not enabled");

@@ -1,9 +1,9 @@
 // Tools for the owner (a person or company), not for the agent.
 //   npm run owner -- init --domain example.com
 //       creates the owner key in ./owner.json and prints the file to publish at
-//       https://example.com/.well-known/accord.json
+//       https://example.com/.well-known/symbolon.json
 //   npm run owner -- mandate --agent ed25519:... --scope "purchase of office supplies" [--max 50000.00] [--currency EUR] [--days 365]
-//       prints a mandate for that agent, to install with the accord_install_mandate tool
+//       prints a mandate for that agent, to install with the symbolon_install_mandate tool
 import { readFileSync, writeFileSync, existsSync } from "node:fs";
 import { toHex } from "../src/bytes.js";
 import { createMandate, generateKeyPair, keyPairFromSecret, WELL_KNOWN_PATH } from "../src/index.js";
@@ -13,7 +13,7 @@ const arg = (name: string) => {
   const i = rest.indexOf(`--${name}`);
   return i >= 0 ? rest[i + 1] : undefined;
 };
-const FILE = process.env.ACCORD_OWNER_FILE ?? "owner.json";
+const FILE = process.env.SYMBOLON_OWNER_FILE ?? "owner.json";
 
 if (cmd === "init") {
   const domain = arg("domain");
@@ -22,7 +22,7 @@ if (cmd === "init") {
   const k = generateKeyPair();
   writeFileSync(FILE, JSON.stringify({ domain, secret: toHex(k.secretKey), publicKey: k.publicKey }, null, 2), { mode: 0o600 });
   console.log(`Owner key saved in ${FILE} (keep it secret). Publish this at https://${domain}${WELL_KNOWN_PATH}:\n`);
-  console.log(JSON.stringify({ accord: 1, domain, keys: [k.publicKey] }, null, 2));
+  console.log(JSON.stringify({ symbolon: 1, domain, keys: [k.publicKey] }, null, 2));
 } else if (cmd === "mandate") {
   const owner = JSON.parse(readFileSync(FILE, "utf8")) as { domain: string; secret: string };
   const agent = arg("agent");

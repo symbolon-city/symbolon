@@ -1,6 +1,6 @@
 // End-to-end check of the piazza through the MCP door, with a declared demonstration agent.
-//   PIAZZA_URL=https://... ACCORD_REGISTER_URL=https://... DEMO_OWNER_SECRET=<hex> npm run piazza:check [-- --keep]
-// The demo owner is the piazza itself (its /.well-known/accord.json), so posts are shown as "demo".
+//   PIAZZA_URL=https://... SYMBOLON_REGISTER_URL=https://... DEMO_OWNER_SECRET=<hex> npm run piazza:check [-- --keep]
+// The demo owner is the piazza itself (its /.well-known/symbolon.json), so posts are shown as "demo".
 // Without --keep the test post is withdrawn at the end.
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -11,21 +11,21 @@ import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js"
 import { createMandate, keyPairFromSecret } from "../src/index.js";
 
 const piazza = process.env.PIAZZA_URL;
-const register = process.env.ACCORD_REGISTER_URL;
+const register = process.env.SYMBOLON_REGISTER_URL;
 const secret = process.env.DEMO_OWNER_SECRET;
-if (!piazza || !register || !secret) throw new Error("Set PIAZZA_URL, ACCORD_REGISTER_URL and DEMO_OWNER_SECRET");
+if (!piazza || !register || !secret) throw new Error("Set PIAZZA_URL, SYMBOLON_REGISTER_URL and DEMO_OWNER_SECRET");
 const keep = process.argv.includes("--keep");
 const home = mkdtempSync(join(tmpdir(), "piazza-check-"));
 
 const client = new Client({ name: "piazza-live-check", version: "0.1.0" });
 const transport = new StdioClientTransport({
   command: "npx",
-  args: ["tsx", "scripts/accord-mcp.ts"],
+  args: ["tsx", "scripts/symbolon-mcp.ts"],
   env: {
     ...(process.env as Record<string, string>),
-    ACCORD_REGISTER_URL: register,
+    SYMBOLON_REGISTER_URL: register,
     PIAZZA_URL: piazza,
-    ACCORD_HOME: home,
+    SYMBOLON_HOME: home,
     SYMBOLON_WALLET_KEY: "passphrase",
     SYMBOLON_WALLET_PASSWORD: randomBytes(24).toString("hex"),
   },
@@ -43,7 +43,7 @@ try {
   await client.connect(transport);
   const tools = (await client.listTools()).tools.map((t) => t.name).filter((n) => n.startsWith("piazza_"));
   console.log("1. Strumenti della piazza:", tools.join(", "));
-  const who = await call("accord_whoami");
+  const who = await call("symbolon_whoami");
   const agentKey: string = who.agentKey ?? JSON.stringify(who).match(/ed25519:[0-9a-f]{64}/)![0];
   const now = new Date();
   const mandate = createMandate(keyPairFromSecret(secret), {
@@ -54,7 +54,7 @@ try {
     notAfter: new Date(now.getTime() + 30 * 86_400_000).toISOString(),
     charter: "accord-charter/0.1",
   });
-  await call("accord_install_mandate", { mandate });
+  await call("symbolon_install_mandate", { mandate });
   console.log("2. Delega dimostrativa installata");
 
   const posted = await call("piazza_post", {

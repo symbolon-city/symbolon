@@ -27,8 +27,10 @@ export class HttpRegisterClient implements RegisterClient {
   }
 
   async info() {
-    const r = await this.get<{ register_key: PublicKey }>("/.well-known/accord-register.json");
-    if (!r) throw new Error("not an Accord register");
+    const r =
+      (await this.get<{ register_key: PublicKey }>("/.well-known/symbolon-register.json")) ??
+      (await this.get<{ register_key: PublicKey }>("/.well-known/accord-register.json")); // earlier name
+    if (!r) throw new Error("not a Symbolon register");
     return r;
   }
   async append(entry: string) {

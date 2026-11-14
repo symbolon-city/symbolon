@@ -1,5 +1,5 @@
 // End-to-end check of the MCP door against a live register, as a real agent would use it.
-//   ACCORD_REGISTER_URL=https://... npm run mcp:check
+//   SYMBOLON_REGISTER_URL=https://... npm run mcp:check
 // Uses a throw-away wallet (temporary folder, random password) and a throw-away owner key.
 import { mkdtempSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
@@ -9,17 +9,17 @@ import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StdioClientTransport } from "@modelcontextprotocol/sdk/client/stdio.js";
 import { createMandate, generateKeyPair } from "../src/index.js";
 
-const url = process.env.ACCORD_REGISTER_URL;
-if (!url) throw new Error("Set ACCORD_REGISTER_URL");
-const home = mkdtempSync(join(tmpdir(), "accord-check-"));
+const url = process.env.SYMBOLON_REGISTER_URL;
+if (!url) throw new Error("Set SYMBOLON_REGISTER_URL");
+const home = mkdtempSync(join(tmpdir(), "symbolon-check-"));
 
 const transport = new StdioClientTransport({
   command: "npx",
-  args: ["tsx", "scripts/accord-mcp.ts"],
+  args: ["tsx", "scripts/symbolon-mcp.ts"],
   env: {
     ...(process.env as Record<string, string>),
-    ACCORD_REGISTER_URL: url,
-    ACCORD_HOME: home,
+    SYMBOLON_REGISTER_URL: url,
+    SYMBOLON_HOME: home,
     SYMBOLON_WALLET_KEY: "passphrase",
     SYMBOLON_WALLET_PASSWORD: randomBytes(24).toString("hex"),
   },
@@ -43,7 +43,7 @@ try {
   const tools = (await client.listTools()).tools.map((t) => t.name);
   console.log(`1. Porta MCP aperta: ${tools.length} strumenti (${tools.join(", ")})`);
 
-  const who = await call("accord_whoami");
+  const who = await call("symbolon_whoami");
   const agentKey: string = who.agentKey ?? who.agent_key ?? who.key ?? JSON.stringify(who).match(/ed25519:[0-9a-f]{64}/)?.[0];
   console.log(`2. Chiave dell'agente: ${agentKey}`);
 
@@ -57,20 +57,20 @@ try {
     notAfter: new Date(now.getTime() + 86_400_000).toISOString(),
     charter: "accord-charter/0.1",
   });
-  await call("accord_install_mandate", { mandate });
+  await call("symbolon_install_mandate", { mandate });
   console.log("3. Delega del padrone (di prova) installata");
 
-  const sealed = await call("accord_seal_action", {
+  const sealed = await call("symbolon_seal_action", {
     instruction: "Prova: sigilla la prima azione sul notaio online",
     action: "Azione di prova sigillata dalla porta MCP",
   });
   const entry: string = sealed.entry ?? JSON.stringify(sealed).match(/[0-9a-f]{64}/)?.[0];
   console.log(`4. Azione sigillata sul registro online. Impronta ${entry}, posizione ${sealed.index ?? sealed.receipt?.index ?? "?"}`);
 
-  const proof = await call("accord_create_proof", { entry, reveal: [] });
+  const proof = await call("symbolon_create_proof", { entry, reveal: [] });
   console.log("5. Fascicolo di prova creato");
 
-  const check = await call("accord_verify_proof", { proof });
+  const check = await call("symbolon_verify_proof", { proof });
   console.log("6. Verifica del fascicolo:", check.valid, "\n" + check.checks.map((c: { ok: boolean; name: string }) => `   ${c.ok ? "ok " : "NO "} ${c.name}`).join("\n"));
 } finally {
   await client.close().catch(() => {});
