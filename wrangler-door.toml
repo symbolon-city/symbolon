@@ -3,6 +3,10 @@ main = "worker/door-worker.ts"
 compatibility_date = "2026-10-01"
 compatibility_flags = ["nodejs_compat"]
 
+# Public address of the door.
+routes = [{ pattern = "mcp.symboloncity.com", custom_domain = true }]
+workers_dev = true
+
 # The visitors' door talks to the register and the piazza through service bindings.
 [[services]]
 binding = "REGISTER"
