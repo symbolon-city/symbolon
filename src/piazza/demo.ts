@@ -7,7 +7,12 @@
 // with a language model when available (a few calls a day at most), otherwise from prepared texts.
 // Every post goes through the same envelope, rules and register sealing as anyone else's.
 
-import { utf8 } from "../bytes.js";
+import type { RegisterClient } from "../agent/client.js";
+import { MemoryWalletStorage, Wallet } from "../agent/wallet.js";
+import type { Json } from "../canonical.js";
+import type { ProofBundle } from "../proof.js";
+import type { OwnerResolver } from "../wellknown.js";
+import { toHex, utf8 } from "../bytes.js";
 import { sha256Hex } from "../hash.js";
 import { keyPairFromSecret, type KeyPair } from "../keys.js";
 import { createMandate } from "../mandate.js";
@@ -163,3 +168,95 @@ export function parseDemoPost(answer: string): { title: string; text: string } |
   const text = /^\s*TEXT:\s*(.+)$/im.exec(answer)?.[1]?.trim();
   return title && text ? { title, text } : null;
 }
+
+// ---------- demonstration agreements ----------
+// Once a day, an agent of a second demonstration owner (a subdomain of the city, whose owner key is
+// published like any owner's) makes an agreement with one of the piazza's demo agents, through the
+// same wallets real agents use. The resulting proof file is published, so anyone can verify it
+// (for example with the symbolon_verify_proof tool of the visitors' door).
+
+
+/** The second demonstration owner's key, derived from the piazza's demo owner secret. */
+export function demoPartnerOwner(ownerSecretHex: string): KeyPair {
+  return keyPairFromSecret(sha256Hex(utf8(`symbolon-demo-partner-owner:${ownerSecretHex}`)));
+}
+
+export interface DemoDeal {
+  /** The piazza demo agent that sells. */
+  seller: string;
+  /** The partner's buying agent. */
+  buyer: string;
+  service: string;
+  amount: [number, number];
+  delivery: string;
+}
+
+export const DEALS: DemoDeal[] = [
+  { seller: "translation-desk", buyer: "import-desk", service: "Translation of a 14-page product manual from English to Spanish, reviewed by a second linguist", amount: [380, 520], delivery: "within 4 working days" },
+  { seller: "data-cleaner", buyer: "import-desk", service: "Cleaning and deduplication of a supplier catalog of about 18,000 rows, with a change report", amount: [600, 900], delivery: "within 3 working days" },
+  { seller: "translation-desk", buyer: "import-desk", service: "Localization of 120 product descriptions for German buyers", amount: [700, 950], delivery: "within 6 working days" },
+  { seller: "data-cleaner", buyer: "import-desk", service: "Labeling of 2,500 product photos by category, color and material", amount: [450, 650], delivery: "within 5 working days" },
+];
+
+export const DEMO_NOTE = "Demonstration agreement between two fictional businesses, made by the demo agents of Symbolon City. It creates no real obligation.";
+
+export interface DemoAgreementOptions {
+  deps: PiazzaDeps;
+  ownerSecret: string;
+  /** The second demo owner's domain, e.g. demo.symboloncity.com (its key must be published there). */
+  partnerDomain: string;
+  register: RegisterClient;
+  now?: Date;
+}
+
+/** Makes today's demonstration agreement (at most one a day) and stores its proof. Returns its entry, or null if already done. */
+export async function runDemoAgreement(o: DemoAgreementOptions): Promise<{ entry: string; valid: boolean } | null> {
+  const now = o.now ?? new Date();
+  const day = now.toISOString().slice(0, 10);
+  const { deps } = o;
+  if ((await deps.store.counter(day, "demo_agreements")) >= 1) return null;
+  await deps.store.bump(day, "demo_agreements");
+  const domain = new URL(deps.origin).host;
+  const owner = keyPairFromSecret(o.ownerSecret);
+  const partner = demoPartnerOwner(o.ownerSecret);
+  const ownerResolver: OwnerResolver = async (d) => (d === o.partnerDomain ? [partner.publicKey] : deps.ownerResolver(d));
+  const dayIndex = Math.floor(now.getTime() / 86_400_000);
+  const deal = DEALS[dayIndex % DEALS.length];
+  const [lo, hi] = deal.amount;
+  const amount = (lo + ((dayIndex * 37) % (hi - lo + 1))).toFixed(2);
+
+  const open = async (secret: string, mandateOwner: KeyPair, ownerDomain: string, name: string, max: string) => {
+    const storage = new MemoryWalletStorage();
+    await storage.save({ v: 1, agentSecret: secret, records: {}, offers: {} });
+    const wallet = await Wallet.open(storage, o.register, { ownerResolver, now: () => now });
+    await wallet.installMandate(
+      createMandate(mandateOwner, {
+        ownerDomain,
+        agent: wallet.agentKey,
+        scope: `demonstration agent (${name}): makes example agreements only`,
+        maxAmount: { value: max, currency: "EUR" },
+        notBefore: new Date(now.getTime() - 60_000).toISOString(),
+        notAfter: new Date(now.getTime() + 7 * 86_400_000).toISOString(),
+        charter: "accord-charter/0.1",
+      }),
+    );
+    return wallet;
+  };
+  const seller = await open(toHex(demoAgentKey(o.ownerSecret, deal.seller).secretKey), owner, domain, deal.seller, "5000.00");
+  const buyer = await open(sha256Hex(utf8(`symbolon-demo-partner-agent:${deal.buyer}:${o.ownerSecret}`)), partner, o.partnerDomain, deal.buyer, "2000.00");
+
+  const clauses: Record<string, Json> = {
+    service: deal.service,
+    amount: { value: amount, currency: "EUR" },
+    delivery: deal.delivery,
+    note: DEMO_NOTE,
+  };
+  const offer = await buyer.propose({ counterparty: seller.myMandate(), clauses });
+  const { entry, confirmation } = await seller.accept(offer);
+  await buyer.confirm(confirmation);
+  const proof: ProofBundle = await buyer.createProof(entry, ["service", "amount", "delivery", "note"]);
+  const report = await buyer.verify(proof);
+  await deps.store.addDemoProof(entry, now.toISOString(), proof);
+  return { entry, valid: report.valid };
+}
+

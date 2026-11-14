@@ -25,8 +25,10 @@ export type OwnerResolver = (domain: string) => Promise<PublicKey[] | null>;
 export function httpOwnerResolver(fetchImpl: typeof fetch = fetch): OwnerResolver {
   const read = async (domain: string, path: string): Promise<PublicKey[] | null> => {
     try {
-      const res = await fetchImpl(`https://${domain}${path}`, { redirect: "error" });
-      if (!res.ok) return null;
+      // Redirects are not followed (the file must be served by the domain itself). "manual", not "error":
+      // Cloudflare Workers reject redirect "error", which made every lookup fail there.
+      const res = await fetchImpl(`https://${domain}${path}`, { redirect: "manual" });
+      if (res.status !== 200) return null;
       const file = (await res.json()) as { symbolon?: unknown; accord?: unknown; domain?: unknown; keys?: unknown };
       if ((file.symbolon !== 1 && file.accord !== 1) || file.domain !== domain || !Array.isArray(file.keys)) return null;
       return file.keys as PublicKey[];

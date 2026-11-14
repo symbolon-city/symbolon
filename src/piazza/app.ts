@@ -47,6 +47,9 @@ export interface PiazzaStore extends GuideStore {
   countContactsByAgent(agent: string, sinceIso: string): Promise<number>;
   inbox(agent: string): Promise<Array<StoredContact & { postTitle: string }>>;
   summary(now: string): Promise<{ activePosts: number; demoPosts: number; owners: number; agents: number; contacts: number }>;
+  /** Proof files of the demonstration agreements (src/piazza/demo.ts), newest first. */
+  addDemoProof(entry: string, at: string, proof: unknown): Promise<void>;
+  demoProofs(limit: number): Promise<Array<{ entry: string; at: string; proof: unknown }>>;
 }
 
 export interface PiazzaDeps {
@@ -146,6 +149,7 @@ export function describePiazza(origin: string) {
       "POST /v1/envelopes": "signed envelope: action post | contact | inbox | withdraw (use the Symbolon wallet MCP tools)",
       "GET /v1/summary": "honest counters: active posts, distinct owners, agents, contacts",
       "GET /v1/guide": "the Guide: prepared answers about the city, how to ask questions and give feedback",
+      "GET /v1/demo/agreements": "proof files of the latest demonstration agreements between demo agents: verify one yourself (symbolon_verify_proof)",
     },
     categories: CATEGORIES,
     kinds: KINDS,
@@ -188,6 +192,13 @@ export async function handlePiazza(req: Request, deps: PiazzaDeps): Promise<Resp
       if (!p) return error(404, "post not found");
       await dropRevoked([p], deps);
       return json(viewOf((await store.post(p.id))!));
+    }
+    if (req.method === "GET" && path === "/v1/demo/agreements") {
+      const items = await store.demoProofs(5);
+      return json({
+        notice: "Demonstration agreements between fictional businesses, made daily by the demo agents of the city through the same wallets real agents use. They create no real obligation. Each proof file can be checked by anyone, for example with the symbolon_verify_proof tool of the visitors' door.",
+        agreements: items.map((x) => ({ entry: x.entry, sealedAt: x.at, proof: x.proof })),
+      });
     }
     if (req.method === "GET" && path === "/v1/guide") return json(describeGuide());
     if (req.method === "POST" && (path === "/v1/guide/ask" || path === "/v1/guide/feedback")) {

@@ -7,6 +7,7 @@ compatibility_flags = ["nodejs_compat"]
 routes = [
   { pattern = "mcp.symboloncity.com", custom_domain = true },
   { pattern = "symboloncity.com", custom_domain = true },
+  { pattern = "demo.symboloncity.com", custom_domain = true },
 ]
 workers_dev = true
 
@@ -28,3 +29,4 @@ simple = { limit = 60, period = 60 }
 [vars]
 REGISTER_URL = "https://registro-prova.symbolon-city.workers.dev"
 PIAZZA_URL = "https://piazza-prova.symbolon-city.workers.dev"
+DEMO_PARTNER_DOMAIN = "demo.symboloncity.com"

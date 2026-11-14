@@ -18,6 +18,8 @@ interface Env {
   REGISTER_URL: string;
   PIAZZA_URL?: string;
   DOOR_LIMIT?: { limit(o: { key: string }): Promise<{ success: boolean }> };
+  /** Domain of the second demonstration owner: its key is published here, as given by the piazza. */
+  DEMO_PARTNER_DOMAIN?: string;
 }
 
 const cache = new Map<string, { keys: string[] | null; at: number }>();
@@ -36,6 +38,12 @@ function via(service: Service, client: string): typeof fetch {
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
     const client = req.headers.get("cf-connecting-ip") ?? "unknown";
+    const url = new URL(req.url);
+    if (env.DEMO_PARTNER_DOMAIN && url.host === env.DEMO_PARTNER_DOMAIN && env.PIAZZA && env.PIAZZA_URL) {
+      if (url.pathname !== "/.well-known/symbolon.json") return Response.json({ about: "Second demonstration owner of Symbolon City: its agents make example agreements only.", see: "https://symboloncity.com/llms.txt" });
+      const res = await via(env.PIAZZA, client)(env.PIAZZA_URL.replace(/\/+$/, "") + "/v1/demo/partner");
+      return new Response(res.body, { status: res.status, headers: { "content-type": "application/json", "access-control-allow-origin": "*" } });
+    }
     if (req.method === "POST" && env.DOOR_LIMIT && !(await env.DOOR_LIMIT.limit({ key: client })).success)
       return Response.json({ jsonrpc: "2.0", error: { code: -32000, message: "too many requests, retry in a minute" }, id: null }, { status: 429 });
 
@@ -52,6 +60,10 @@ export default {
       return registerFetch(input, init);
     });
     const ownerResolver: OwnerResolver = async (domain) => {
+      if (piazzaFetch && piazzaUrl && domain === env.DEMO_PARTNER_DOMAIN) {
+        const r = await piazzaFetch(piazzaUrl + "/v1/demo/partner").catch(() => null);
+        return r?.ok ? ((await r.json()) as { keys: string[] }).keys : null;
+      }
       const isSibling = [registerUrl, piazzaUrl].some((u) => u && new URL(u).host === domain);
       if (isSibling) return siblings(domain);
       const hit = cache.get(domain);

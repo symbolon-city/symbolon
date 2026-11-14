@@ -56,6 +56,13 @@ export class MemoryPiazzaStore implements PiazzaStore {
     const p = this.postsById.get(id);
     if (p) p.status = "withdrawn";
   }
+  private proofs: Array<{ entry: string; at: string; proof: unknown }> = [];
+  async addDemoProof(entry: string, at: string, proof: unknown) {
+    if (!this.proofs.some((x) => x.entry === entry)) this.proofs.unshift({ entry, at, proof });
+  }
+  async demoProofs(limit: number) {
+    return this.proofs.slice(0, limit);
+  }
   async markRevoked(id: string) {
     const p = this.postsById.get(id);
     if (p && p.status === "active") p.status = "revoked";
@@ -104,6 +111,7 @@ CREATE TABLE IF NOT EXISTS contacts (post_id TEXT NOT NULL, from_agent TEXT NOT 
 CREATE TABLE IF NOT EXISTS daily_stats (day TEXT NOT NULL, kind TEXT NOT NULL, n INTEGER NOT NULL, PRIMARY KEY (day, kind));
 CREATE TABLE IF NOT EXISTS guide_answers (key TEXT PRIMARY KEY, question TEXT NOT NULL, answer TEXT NOT NULL, at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS guide_counters (day TEXT NOT NULL, name TEXT NOT NULL, n INTEGER NOT NULL, PRIMARY KEY (day, name));
+CREATE TABLE IF NOT EXISTS demo_proofs (entry TEXT PRIMARY KEY, at TEXT NOT NULL, proof TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS guide_feedback (at TEXT NOT NULL, tier TEXT NOT NULL, stage TEXT, text TEXT NOT NULL);
 `;
 
@@ -176,6 +184,13 @@ export class D1PiazzaStore implements PiazzaStore {
   }
   async withdraw(id: string) {
     await this.db.prepare("UPDATE posts SET status = 'withdrawn' WHERE id = ?").bind(id).run();
+  }
+  async addDemoProof(entry: string, at: string, proof: unknown) {
+    await this.db.prepare("INSERT OR IGNORE INTO demo_proofs (entry, at, proof) VALUES (?, ?, ?)").bind(entry, at, JSON.stringify(proof)).run();
+  }
+  async demoProofs(limit: number) {
+    const r = await this.db.prepare("SELECT entry, at, proof FROM demo_proofs ORDER BY at DESC LIMIT ?").bind(limit).all<{ entry: string; at: string; proof: string }>();
+    return r.results.map((x) => ({ entry: x.entry, at: x.at, proof: JSON.parse(x.proof) as unknown }));
   }
   async markRevoked(id: string) {
     await this.db.prepare("UPDATE posts SET status = 'revoked' WHERE id = ? AND status = 'active'").bind(id).run();

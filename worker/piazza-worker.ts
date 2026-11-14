@@ -9,7 +9,8 @@
 import { keyPairFromSecret } from "../src/keys.js";
 import { httpOwnerResolver, type OwnerResolver } from "../src/wellknown.js";
 import { handlePiazza, type PiazzaDeps } from "../src/piazza/app.js";
-import { runDemoCity } from "../src/piazza/demo.js";
+import { demoPartnerOwner, runDemoAgreement, runDemoCity } from "../src/piazza/demo.js";
+import { HttpRegisterClient } from "../src/agent/client.js";
 import { D1PiazzaStore, PIAZZA_MIGRATIONS, PIAZZA_SCHEMA } from "../src/piazza/stores.js";
 import { claudeAskModel, claudeDemoWriter } from "../src/piazza/guide-claude.js";
 import type { D1Like } from "../src/server/stores.js";
@@ -30,6 +31,8 @@ interface Env {
   GUIDE_DAILY_BUDGET_MICRO_USD?: string;
   /** Model calls per day for demo posts (default 6). */
   DEMO_DAILY_WRITES?: string;
+  /** Domain of the second demonstration owner (its key is served by the door at /.well-known/symbolon.json). */
+  DEMO_PARTNER_DOMAIN?: string;
 }
 
 let schemaReady = false;
@@ -44,6 +47,7 @@ function demoKeys(env: Env): string[] {
 function resolver(env: Env, host: string): OwnerResolver {
   const http = httpOwnerResolver();
   return async (domain) => {
+    if (env.DEMO_OWNER_SECRET && domain === env.DEMO_PARTNER_DOMAIN) return [demoPartnerOwner(env.DEMO_OWNER_SECRET).publicKey];
     if (domain === host) {
       const keys = demoKeys(env);
       return keys.length ? keys : null;
@@ -104,6 +108,10 @@ export default {
       if (!keys.length) return new Response("Not found", { status: 404 });
       return Response.json({ symbolon: 1, accord: 1, domain: url.host, keys, note: "demonstration agents of the piazza, declared as such" });
     }
+    if (url.pathname === "/v1/demo/partner") {
+      if (!env.DEMO_OWNER_SECRET || !env.DEMO_PARTNER_DOMAIN) return Response.json({ error: "not found" }, { status: 404 });
+      return Response.json({ symbolon: 1, domain: env.DEMO_PARTNER_DOMAIN, keys: [demoPartnerOwner(env.DEMO_OWNER_SECRET).publicKey], note: "second demonstration owner of the city, declared as such" });
+    }
     if (req.method === "POST" && env.ENVELOPE_LIMIT) {
       const ok = (await env.ENVELOPE_LIMIT.limit({ key: req.headers.get("cf-connecting-ip") ?? "unknown" })).success;
       if (!ok) return Response.json({ error: "too many requests, retry in a minute" }, { status: 429 });
@@ -122,5 +130,11 @@ export default {
       maxWrites: env.DEMO_DAILY_WRITES ? Number(env.DEMO_DAILY_WRITES) : undefined,
     });
     console.log("demo city:", JSON.stringify(result));
+    if (env.DEMO_PARTNER_DOMAIN) {
+      const d = deps(env, env.PIAZZA_URL.replace(/\/+$/, ""));
+      const register = new HttpRegisterClient(env.REGISTER_URL.replace(/\/+$/, ""), (input, init) => registerCall(env, new URL(String(input)).pathname + new URL(String(input)).search, init));
+      const agreement = await runDemoAgreement({ deps: d, ownerSecret: env.DEMO_OWNER_SECRET, partnerDomain: env.DEMO_PARTNER_DOMAIN, register }).catch((e) => ({ error: String(e) }));
+      console.log("demo agreement:", JSON.stringify(agreement));
+    }
   },
 };

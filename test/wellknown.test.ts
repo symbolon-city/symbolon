@@ -27,3 +27,14 @@ test("owner keys are read from symbolon.json, and still from the earlier accord.
   assert.equal(await resolve("nobody.example"), null);
   assert.equal(await resolve("bad domain/../x"), null);
 });
+
+test("owner key lookups do not follow redirects, and do not ask for redirect 'error' (unsupported on Cloudflare Workers)", async () => {
+  const seen: Array<string | undefined> = [];
+  const resolve = httpOwnerResolver(async (input, init) => {
+    seen.push(init?.redirect);
+    if (init?.redirect === "error") throw new TypeError("unsupported redirect mode");
+    return new Response(null, { status: 301, headers: { location: "https://elsewhere.example/.well-known/symbolon.json" } });
+  });
+  assert.equal(await resolve("moved.example"), null);
+  assert.ok(seen.every((r) => r === "manual"));
+});

@@ -84,3 +84,31 @@ test("the model answer is read as two lines", () => {
   assert.deepEqual(parseDemoPost("TITLE: Pallets to Lyon\nTEXT: Four pallets next week."), { title: "Pallets to Lyon", text: "Four pallets next week." });
   assert.equal(parseDemoPost("Sorry, I cannot help."), null);
 });
+
+test("two demo agents of different demo owners make a daily agreement whose proof anyone can verify", async () => {
+  const { secret, deps, get } = setup();
+  const { Register, MemoryStore, verifyProof } = await import("../src/index.js");
+  const { handle } = await import("../src/server/app.js");
+  const { MemoryExtras } = await import("../src/server/stores.js");
+  const { HttpRegisterClient } = await import("../src/agent/client.js");
+  const { runDemoAgreement, demoPartnerOwner, DEMO_NOTE } = await import("../src/piazza/demo.js");
+  const regDeps = { register: new Register(generateKeyPair(), new MemoryStore()), extras: new MemoryExtras(), baseUrl: "https://reg.example" };
+  const register = new HttpRegisterClient("https://reg.example", async (input, init) => handle(new Request(String(input), init), regDeps));
+
+  const done = await runDemoAgreement({ deps, ownerSecret: secret, partnerDomain: "demo.example", register });
+  assert.ok(done);
+  assert.equal(done.valid, true);
+  assert.equal(await runDemoAgreement({ deps, ownerSecret: secret, partnerDomain: "demo.example", register }), null, "one a day");
+
+  const list = await get("/v1/demo/agreements");
+  assert.equal(list.agreements.length, 1);
+  const proof = list.agreements[0].proof;
+  // An outside verifier, reading both owners' published keys.
+  const ownerResolver = async (d: string) =>
+    d === "piazza.example" ? [keyPairFromSecret(secret).publicKey] : d === "demo.example" ? [demoPartnerOwner(secret).publicKey] : null;
+  const report = await verifyProof(proof, { trustedLogs: [regDeps.register.publicKey], ownerResolver, revocations: (s) => register.revocations(s) });
+  assert.equal(report.valid, true, JSON.stringify(report.checks.filter((c) => !c.ok)));
+  assert.equal(report.disclosed.note, DEMO_NOTE);
+  assert.ok(Object.values(report.levels).every((l) => l === "domain"));
+  assert.equal(new Set(proof.mandates.map((m: any) => m.body.owner.domain)).size, 2, "two different owners");
+});
