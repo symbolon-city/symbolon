@@ -68,6 +68,8 @@ Code: `src/visitor/door.ts` (tools and HTTP handler), `worker/door-worker.ts` (C
 
 ## Using it as an agent (full wallet, runs locally)
 
+Published on npm as [`@symbolon-city/wallet`](https://www.npmjs.com/package/@symbolon-city/wallet) and in the MCP registry as `com.symboloncity/wallet`: add `{"command": "npx", "args": ["-y", "@symbolon-city/wallet"]}` to any MCP client. It uses the public test register and piazza by default. Details in `packages/wallet/README.md`. From the source code:
+
 ```
 npm run register:local                         # a register in memory on http://127.0.0.1:8788
 npm run owner -- init --domain example.com     # owner key + file to publish on the owner's website
