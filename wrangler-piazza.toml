@@ -1,0 +1,23 @@
+name = "piazza-prova"
+main = "worker/piazza-worker.ts"
+compatibility_date = "2026-10-01"
+
+[[d1_databases]]
+binding = "DB"
+database_name = "piazza-prova"
+database_id = "cbcd7095-7c9f-482d-9fab-19561513b4a5"
+
+# Anti-spam: at most 30 signed envelopes per minute per client.
+[[ratelimits]]
+name = "ENVELOPE_LIMIT"
+namespace_id = "1002"
+simple = { limit = 30, period = 60 }
+
+# Direct link to the notary register worker.
+[[services]]
+binding = "REGISTER"
+service = "registro-prova"
+
+[vars]
+REGISTER_URL = "https://registro-prova.symbolon-city.workers.dev"
+DEMO_OWNER_KEY = "ed25519:7245ccf0703e5d42686674b70820ae6aaf51aebf9d2ff7a38d7a2a4493c72ead"

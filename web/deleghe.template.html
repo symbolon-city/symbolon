@@ -1,0 +1,162 @@
+<title>Deleghe Symbolon</title>
+<meta name="claude:viewport-fit-sides" content="cover">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500&display=swap">
+<style>
+/* Layout: one column of three working cards (stamp, new mandate, check); the bronze seal colour marks the signing action. */
+:root {
+  --bg: #f6f7f9; --surface: #ffffff; --ink: #18202b; --muted: #5a6575; --line: #d7dce3;
+  --accent: #a8620f; --accent-ink: #ffffff; --accent-soft: #f3e6d4; --ok: #1f7a4d; --bad: #b3261e; --field: #fbfcfd;
+  --display: "Space Grotesk", "Segoe UI", system-ui, sans-serif;
+  --body: "Inter", "Segoe UI", system-ui, sans-serif;
+  --mono: "JetBrains Mono", ui-monospace, Menlo, monospace;
+}
+@media (prefers-color-scheme: dark) { :root:not([data-theme="light"]) {
+  --bg: #0f141b; --surface: #171e28; --ink: #e6e9ee; --muted: #9aa5b4; --line: #2a3442;
+  --accent: #e0a24d; --accent-ink: #1a1206; --accent-soft: #33281a; --ok: #5cc794; --bad: #f08a80; --field: #121821; color-scheme: dark; } }
+:root[data-theme="dark"] {
+  --bg: #0f141b; --surface: #171e28; --ink: #e6e9ee; --muted: #9aa5b4; --line: #2a3442;
+  --accent: #e0a24d; --accent-ink: #1a1206; --accent-soft: #33281a; --ok: #5cc794; --bad: #f08a80; --field: #121821; color-scheme: dark; }
+[hidden] { display: none !important; }
+body { background: var(--bg); color: var(--ink); font-family: var(--body); font-size: 16px; line-height: 1.5; }
+.wrap { max-width: 640px; margin: 0 auto; padding-block: 28px 56px;
+  padding-left: max(16px, env(safe-area-inset-left, 0px)); padding-right: max(16px, env(safe-area-inset-right, 0px));
+  display: flex; flex-direction: column; gap: 22px; }
+h1, h2 { font-family: var(--display); margin: 0; text-wrap: balance; line-height: 1.15; }
+h1 { font-size: clamp(28px, 6.5vw, 38px); }
+h2 { font-size: 20px; }
+p { margin: 0; }
+.lede, .hint { color: var(--muted); }
+.hint { font-size: 14px; }
+.card { background: var(--surface); border: 1px solid var(--line); border-radius: 12px; padding: 18px; display: flex; flex-direction: column; gap: 14px; }
+.card.locked { opacity: .55; }
+.head { display: flex; gap: 12px; align-items: center; }
+.num { flex: 0 0 34px; height: 34px; border-radius: 50%; display: grid; place-items: center; background: var(--accent-soft); color: var(--accent); font-family: var(--display); font-weight: 700; }
+form, .stack { display: flex; flex-direction: column; gap: 12px; }
+label { display: flex; flex-direction: column; gap: 5px; font-weight: 500; font-size: 15px; }
+label span.hint { font-weight: 400; }
+input, select, textarea { font: inherit; color: var(--ink); background: var(--field); border: 1px solid var(--line); border-radius: 8px; padding: 10px 12px; min-width: 0; }
+textarea { font-family: var(--mono); font-size: 12.5px; min-height: 120px; resize: vertical; }
+input:focus-visible, select:focus-visible, textarea:focus-visible, button:focus-visible, summary:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.row { display: grid; grid-template-columns: 1fr 110px; gap: 10px; }
+.row > * { min-width: 0; }
+button { font: inherit; font-weight: 600; border-radius: 8px; padding: 10px 16px; cursor: pointer; border: 1px solid var(--line); background: var(--surface); color: var(--ink); }
+button.primary { background: var(--accent); color: var(--accent-ink); border-color: var(--accent); }
+button.danger { color: var(--bad); border-color: var(--bad); }
+.actions { display: flex; flex-wrap: wrap; gap: 8px; }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 4px 12px; font-size: 14px; }
+.kv dt { color: var(--muted); }
+.kv dd { margin: 0; font-family: var(--mono); font-size: 12.5px; overflow-wrap: anywhere; min-width: 0; }
+.url { font-family: var(--mono); font-size: 13px; overflow-wrap: anywhere; color: var(--accent); }
+.error { color: var(--bad); font-size: 14px; }
+.summary { background: var(--accent-soft); border-radius: 8px; padding: 12px; font-weight: 500; }
+.verdict { border-radius: 8px; padding: 12px; display: flex; flex-direction: column; gap: 4px; font-size: 14.5px; border: 1px solid var(--line); }
+.verdict.good { border-color: var(--ok); }
+.verdict.bad { border-color: var(--bad); }
+.confirm { border: 1px solid var(--bad); border-radius: 8px; padding: 12px; display: flex; flex-direction: column; gap: 10px; }
+details summary { cursor: pointer; color: var(--muted); font-size: 14px; }
+details[open] summary { margin-bottom: 10px; }
+.note { color: var(--muted); font-size: 13.5px; }
+</style>
+
+<div class="wrap">
+  <header class="stack">
+    <h1>Deleghe per i tuoi agenti</h1>
+    <p class="lede">Qui firmi le deleghe che autorizzano i tuoi agenti AI ad agire per te. Il tuo timbro resta solo in questo browser.</p>
+  </header>
+
+  <section class="card" aria-labelledby="t1">
+    <div class="head"><div class="num">1</div><h2 id="t1">Il tuo timbro</h2></div>
+
+    <div id="no-owner" class="stack">
+      <p class="hint">Si crea una volta sola. Il timbro è legato al sito della tua azienda: chi riceve una tua delega controllerà che il timbro sia pubblicato lì.</p>
+      <form id="create-owner">
+        <label for="domain">Sito della tua azienda
+          <input id="domain" name="domain" placeholder="example.com" autocomplete="url" inputmode="url" required>
+        </label>
+        <p id="domain-error" class="error" hidden></p>
+        <div class="actions"><button class="primary" type="submit">Crea il timbro</button></div>
+      </form>
+      <details>
+        <summary>Hai già un timbro? Ripristina la copia di sicurezza</summary>
+        <form id="restore-form">
+          <label for="restore">Copia di sicurezza<textarea id="restore" spellcheck="false"></textarea></label>
+          <p id="restore-error" class="error" hidden></p>
+          <div class="actions"><button type="submit">Ripristina</button></div>
+        </form>
+      </details>
+    </div>
+
+    <div id="has-owner" class="stack" hidden>
+      <dl class="kv">
+        <dt>Azienda</dt><dd id="owner-domain"></dd>
+        <dt>Timbro pubblico</dt><dd id="owner-key"></dd>
+      </dl>
+      <p class="hint">Pubblica questo file sul tuo sito, a questo indirizzo esatto:</p>
+      <p id="wellknown-url" class="url"></p>
+      <textarea id="wellknown" readonly spellcheck="false" aria-label="File da pubblicare sul sito"></textarea>
+      <div class="actions">
+        <button id="copy-wellknown" type="button">Copia il file</button>
+        <button id="show-backup" type="button">Copia di sicurezza del timbro</button>
+        <button id="forget" type="button" class="danger">Rimuovi da questo browser</button>
+      </div>
+      <div id="backup-box" class="stack" hidden>
+        <p class="hint">Questo testo contiene il timbro privato. Conservalo in un posto sicuro (un gestore di password) e non mandarlo a nessuno: chi lo ha può firmare deleghe al posto tuo.</p>
+        <textarea id="backup" readonly spellcheck="false" aria-label="Copia di sicurezza"></textarea>
+        <div class="actions"><button id="copy-backup" type="button">Copia</button></div>
+      </div>
+      <div id="forget-confirm" class="confirm" hidden>
+        <p>Il timbro verrà cancellato da questo browser. Senza copia di sicurezza non potrai più firmare con lui: dovrai crearne uno nuovo e pubblicarlo sul sito.</p>
+        <div class="actions"><button id="forget-yes" type="button" class="danger">Rimuovi</button><button id="forget-no" type="button">Annulla</button></div>
+      </div>
+    </div>
+  </section>
+
+  <section id="mandate-card" class="card" aria-labelledby="t2">
+    <div class="head"><div class="num">2</div><h2 id="t2">Nuova delega</h2></div>
+    <form id="mandate-form">
+      <label for="agent">Codice dell'agente
+        <span class="hint">L'agente lo mostra con il comando accord_whoami. Inizia con ed25519:</span>
+        <input id="agent" name="agent" spellcheck="false" autocomplete="off" placeholder="ed25519:f6bd642c…" required>
+      </label>
+      <label for="scope">Cosa può fare
+        <input id="scope" name="scope" placeholder="Assistenza clienti e rimborsi" required>
+      </label>
+      <div class="row">
+        <label for="max">Limite di spesa (facoltativo)
+          <input id="max" name="max" inputmode="decimal" placeholder="500">
+        </label>
+        <label for="currency">Valuta
+          <select id="currency" name="currency"><option>EUR</option><option>USD</option><option>GBP</option><option>CHF</option></select>
+        </label>
+      </div>
+      <label for="days">Durata
+        <select id="days" name="days"><option value="30">30 giorni</option><option value="90">3 mesi</option><option value="365" selected>1 anno</option></select>
+      </label>
+      <p id="mandate-error" class="error" hidden></p>
+      <div class="actions"><button class="primary" type="submit">Firma la delega</button></div>
+    </form>
+
+    <div id="result" class="stack" hidden>
+      <p id="summary" class="summary"></p>
+      <textarea id="mandate-out" readonly spellcheck="false" aria-label="Delega firmata"></textarea>
+      <div class="actions"><button id="copy-mandate" type="button" class="primary">Copia la delega</button></div>
+      <p class="hint">Consegnala all'agente: la installa con il comando accord_install_mandate. Da quel momento può agire per te entro questi limiti.</p>
+    </div>
+  </section>
+
+  <section class="card" aria-labelledby="t3">
+    <div class="head"><div class="num">3</div><h2 id="t3">Controlla una delega</h2></div>
+    <form id="verify-form">
+      <label for="verify-in">Incolla una delega ricevuta da un altro agente
+        <textarea id="verify-in" spellcheck="false" placeholder='{"body": {"type": "accord/mandate", …}, "signature": "…"}'></textarea>
+      </label>
+      <div class="actions"><button type="submit">Controlla</button></div>
+    </form>
+    <div id="verify-out" class="verdict" hidden></div>
+  </section>
+
+  <p class="note">Prototipo. Il timbro privato viene creato e conservato solo in questo browser e non viene inviato a nessuno. È il livello 1 di identità: prova che la delega viene da chi controlla il sito. I livelli successivi (partita IVA, firma digitale qualificata, cauzione) arriveranno dopo.</p>
+</div>
+<script>/*SCRIPT*/</script>

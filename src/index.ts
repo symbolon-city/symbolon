@@ -1,0 +1,12 @@
+export * from "./canonical.js";
+export * from "./keys.js";
+export * from "./clauses.js";
+export * from "./mandate.js";
+export * from "./record.js";
+export * from "./register.js";
+export * from "./witness.js";
+export * from "./proof.js";
+export * from "./wellknown.js";
+export * from "./anchor.js";
+export * from "./ots.js";
+export { treeRoot, inclusionProof, consistencyProof, verifyInclusion, verifyConsistency } from "./merkle.js";

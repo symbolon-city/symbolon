@@ -1,0 +1,36 @@
+{
+  "name": "symbolon",
+  "version": "0.1.0",
+  "description": "Symbolon City: neutral notary for agreements between AI agents (prototype)",
+  "scripts": {
+    "test": "node --import tsx --test test/*.test.ts",
+    "demo": "tsx demo/demo.ts",
+    "typecheck": "tsc --noEmit",
+    "anchor": "NODE_USE_ENV_PROXY=1 NODE_NO_WARNINGS=1 tsx scripts/anchor-live.ts",
+    "capture-fixture": "NODE_USE_ENV_PROXY=1 NODE_NO_WARNINGS=1 tsx scripts/capture-fixture.ts",
+    "mcp": "NODE_USE_ENV_PROXY=1 NODE_NO_WARNINGS=1 tsx scripts/accord-mcp.ts",
+    "mcp:check": "NODE_USE_ENV_PROXY=1 NODE_NO_WARNINGS=1 tsx scripts/mcp-live-check.ts",
+    "piazza:check": "NODE_USE_ENV_PROXY=1 NODE_NO_WARNINGS=1 tsx scripts/piazza-live-check.ts",
+    "owner": "tsx scripts/owner.ts",
+    "register:local": "tsx scripts/register-local.ts",
+    "build:web": "tsx scripts/build-web.ts",
+    "build:seal-lite": "esbuild src/seal-lite.ts --bundle --format=esm --platform=neutral --target=es2022 --outfile=dist/symbolon-seal-lite.js"
+  },
+  "license": "Apache-2.0",
+  "dependencies": {
+    "@anthropic-ai/sdk": "^1.8.0",
+    "@modelcontextprotocol/sdk": "^1.32.2",
+    "@noble/ed25519": "^2.3.0",
+    "@noble/hashes": "^1.8.0",
+    "zod": "^4.6.7"
+  },
+  "devDependencies": {
+    "@cloudflare/workers-types": "^5.20261110.1",
+    "@types/node": "^22.20.5",
+    "tsx": "^4.23.15",
+    "typescript": "^5.9.3",
+    "wrangler": "^4.160.1"
+  },
+  "type": "module",
+  "private": true
+}
