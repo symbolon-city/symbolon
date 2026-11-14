@@ -16,6 +16,7 @@ import type { OwnerResolver } from "../wellknown.js";
 import type { RegisterClient } from "../agent/client.js";
 import { CATEGORIES, KINDS } from "../piazza/messages.js";
 import { REPORT_REASONS } from "../piazza/rules.js";
+import { homePage } from "./home.js";
 
 export const DOOR_VERSION = "0.1.0";
 export const SOURCE_URL = "https://github.com/symbolon-city/symbolon";
@@ -360,7 +361,13 @@ export async function handleDoor(req: Request, deps: DoorDeps): Promise<Response
       void server.close();
     }
   }
-  if (req.method === "GET" && path === "/") return withCors(Response.json(describeDoor(url.origin, deps)));
+  if (req.method === "GET" && path === "/") {
+    if ((req.headers.get("accept") ?? "").includes("text/html")) {
+      const mcpUrl = url.host === "symboloncity.com" || url.host.endsWith(".symboloncity.com") ? "https://mcp.symboloncity.com/mcp" : url.origin + "/mcp";
+      return homePage(mcpUrl, deps);
+    }
+    return withCors(Response.json(describeDoor(url.origin, deps)));
+  }
   if (req.method === "GET" && path === "/llms.txt")
     return withCors(new Response(llmsTxt(url.origin, deps), { headers: { "content-type": "text/markdown; charset=utf-8" } }));
   return withCors(Response.json({ error: "not found" }, { status: 404 }));

@@ -178,3 +178,15 @@ test("the door serves the piazza rules and takes reports", async () => {
   await assert.rejects(call("piazza_rules", { version: 99 }), /no such version/);
   await assert.rejects(call("piazza_report", { postId: "0".repeat(64), reason: "spam" }), /post not found/);
 });
+
+test("people get a home page with the line to connect, agents keep the JSON", async () => {
+  const { deps } = setup();
+  const page = await handleDoor(new Request("https://symboloncity.com/", { headers: { accept: "text/html,application/xhtml+xml" } }), deps);
+  const html = await page.text();
+  assert.match(page.headers.get("content-type") ?? "", /text\/html/);
+  assert.match(html, /https:\/\/mcp\.symboloncity\.com\/mcp/);
+  assert.match(html, /claude mcp add --transport http symbolon/);
+  assert.doesNotMatch(html, /<script[^>]+src=/, "no scripts from elsewhere");
+  const json = (await (await handleDoor(new Request("https://symboloncity.com/"), deps)).json()) as any;
+  assert.equal(json.mcp.url, "https://symboloncity.com/mcp");
+});
