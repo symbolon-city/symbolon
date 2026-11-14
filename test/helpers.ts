@@ -1,3 +1,5 @@
+import { DatabaseSync } from "node:sqlite";
+import type { D1Like } from "../src/server/stores.js";
 import {
   MemoryStore,
   Register,
@@ -79,5 +81,25 @@ export async function scenario() {
   return {
     alfaOwner, betaOwner, buyer, seller, register, store, witnesses,
     buyerMandate, sellerMandate, opened, record, receipt, cosignatures, verifyOpts, proof, validity,
+  };
+}
+
+// A D1 stand-in over node:sqlite, to check the SQL that runs in production.
+export function sqliteD1(db: DatabaseSync): D1Like & { exec(sql: string): void } {
+  const stmt = (sql: string, values: unknown[] = []) => ({
+    bind: (...v: unknown[]) => stmt(sql, v),
+    first: async <T>() => (db.prepare(sql).get(...(values as never[])) as T) ?? null,
+    all: async <T>() => ({ results: db.prepare(sql).all(...(values as never[])) as T[] }),
+    run: async () => db.prepare(sql).run(...(values as never[])),
+    sql,
+    values,
+  });
+  return {
+    prepare: (sql) => stmt(sql),
+    batch: async (stmts) => {
+      for (const s of stmts) await s.run();
+      return [];
+    },
+    exec: (sql) => db.exec(sql),
   };
 }

@@ -3,7 +3,7 @@
 // and by the visitors' door, which has no wallet.
 
 import { verifyMandateSignature, withinValidity, type Amount, type Mandate } from "./mandate.js";
-import { revocationsOf, subjectsOf, type RevocationSource } from "./revocation.js";
+import { revocationsOf, signersOf, subjectsOf, type RevocationSource } from "./revocation.js";
 import type { OwnerResolver } from "./wellknown.js";
 
 export interface CounterpartyCheck {
@@ -39,7 +39,7 @@ export async function checkMandate(
   let status: CounterpartyCheck["revocations"] = "not checked";
   if (opts.revocations) {
     try {
-      const hit = revocationsOf(m, await opts.revocations(subjectsOf(m)), ownerKeys)[0];
+      const hit = revocationsOf(m, await opts.revocations(subjectsOf(m), signersOf(m, ownerKeys)), ownerKeys)[0];
       status = "checked";
       if (hit) {
         const b = hit.revocation.body;

@@ -14,7 +14,7 @@ import type { Receipt } from "../register.js";
 import type { OwnerResolver } from "../wellknown.js";
 import type { RegisterClient } from "./client.js";
 import { checkMandate, type CounterpartyCheck } from "../counterparty.js";
-import { revocationsOf, subjectsOf } from "../revocation.js";
+import { revocationsOf, signersOf, subjectsOf } from "../revocation.js";
 import { signEnvelope, type Action, type Envelope } from "../piazza/messages.js";
 
 export interface StoredRecord {
@@ -138,13 +138,14 @@ export class Wallet {
   }
 
   checkCounterparty(m: Mandate): Promise<CounterpartyCheck> {
-    return checkMandate(m, { ownerResolver: this.opts.ownerResolver, revocations: (s) => this.register.revocations(s), now: this.now() });
+    return checkMandate(m, { ownerResolver: this.opts.ownerResolver, revocations: (s, k) => this.register.revocations(s, k), now: this.now() });
   }
 
   /** Refuses to act on a revoked mandate (own or counterparty's). Unreachable revocation list: not blocking. */
   private async refuseIfRevoked(m: Mandate, whose: string) {
-    const r = await this.register.revocations(subjectsOf(m)).catch(() => []);
-    const hit = revocationsOf(m, r, this.opts.ownerResolver ? await this.opts.ownerResolver(m.body.owner.domain) : null)[0];
+    const keys = this.opts.ownerResolver ? await this.opts.ownerResolver(m.body.owner.domain) : null;
+    const r = await this.register.revocations(subjectsOf(m), signersOf(m, keys)).catch(() => []);
+    const hit = revocationsOf(m, r, keys)[0];
     if (hit) throw new Error(`${whose} mandate was revoked on ${hit.time}${hit.revocation.body.reason ? ` (${hit.revocation.body.reason})` : ""}`);
   }
 
@@ -286,7 +287,7 @@ export class Wallet {
       trustedLogs: [info.register_key, ...extraTrustedLogs],
       ownerResolver: this.opts.ownerResolver,
       bitcoin: this.opts.bitcoin,
-      revocations: (s) => this.register.revocations(s),
+      revocations: (s, k) => this.register.revocations(s, k),
     });
   }
 

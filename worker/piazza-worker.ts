@@ -14,7 +14,7 @@ import { HttpRegisterClient } from "../src/agent/client.js";
 import { D1PiazzaStore, PIAZZA_MIGRATIONS, PIAZZA_SCHEMA } from "../src/piazza/stores.js";
 import { claudeAskModel, claudeDemoWriter } from "../src/piazza/guide-claude.js";
 import type { D1Like } from "../src/server/stores.js";
-import type { RegisteredRevocation } from "../src/revocation.js";
+import { fetchAllRevocations, type RegisteredRevocation } from "../src/revocation.js";
 
 interface Env {
   DB: D1Like & { exec(sql: string): Promise<unknown> };
@@ -81,11 +81,16 @@ function deps(env: Env, origin: string, defer?: (p: Promise<unknown>) => void): 
     ownerResolver: resolver(env, new URL(origin).host),
     origin,
     demoDomain: new URL(origin).host,
-    revocations: async (subjects) => {
-      const res = await registerCall(env, "/v1/revocations?" + new URLSearchParams(subjects.map((s) => ["subject", s])));
-      if (!res.ok) throw new Error(`register: HTTP ${res.status}`);
-      return ((await res.json()) as { revocations: RegisteredRevocation[] }).revocations;
-    },
+    revocations: (subjects, signers) =>
+      fetchAllRevocations(
+        async (path) => {
+          const res = await registerCall(env, path);
+          if (!res.ok) throw new Error(`register: HTTP ${res.status}`);
+          return (await res.json()) as { revocations: RegisteredRevocation[]; next?: number };
+        },
+        subjects,
+        signers,
+      ),
     seal: async (fingerprint) => {
       const res = await registerCall(env, "/v1/entries", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ entry: fingerprint }) });
       if (!res.ok) throw new Error(`register: HTTP ${res.status}`);

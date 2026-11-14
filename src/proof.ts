@@ -9,7 +9,7 @@ import { amountLeq, mandateId, verifyMandateSignature, withinValidity, type Amou
 import { verifyConsistency, verifyInclusion } from "./merkle.js";
 import { entryHash, type SignedRecord } from "./record.js";
 import { entryLeaf, verifyHeadSignature, type Receipt } from "./register.js";
-import { revocationsOf, subjectsOf, type RevocationSource } from "./revocation.js";
+import { revocationsOf, signersOf, subjectsOf, type RevocationSource } from "./revocation.js";
 import type { OwnerResolver } from "./wellknown.js";
 import { verifyCosignature, type Cosignature } from "./witness.js";
 
@@ -102,7 +102,7 @@ export async function verifyProof(b: ProofBundle, opts: VerifyOptions): Promise<
     if (opts.revocations) {
       // A revocation applies from its position in the register: records sealed before it stay valid.
       try {
-        const found = revocationsOf(m, await opts.revocations(subjectsOf(m)), keys);
+        const found = revocationsOf(m, await opts.revocations(subjectsOf(m), signersOf(m, keys)), keys);
         const before = found.find((r) => r.index < b.receipt.index);
         const after = found.find((r) => r.index > b.receipt.index);
         add(

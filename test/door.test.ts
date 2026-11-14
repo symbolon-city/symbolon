@@ -174,7 +174,8 @@ test("the door serves the piazza rules and takes reports", async () => {
   const { call } = await connect(deps);
   const rules = await call("piazza_rules");
   assert.equal(rules.document.type, "symbolon/piazza-rules");
-  assert.equal((await call("piazza_rules", { version: 1 })).fingerprint, rules.fingerprint);
+  assert.equal((await call("piazza_rules", { version: rules.document.version })).fingerprint, rules.fingerprint);
+  assert.notEqual((await call("piazza_rules", { version: 1 })).fingerprint, rules.fingerprint, "earlier versions stay readable");
   await assert.rejects(call("piazza_rules", { version: 99 }), /no such version/);
   await assert.rejects(call("piazza_report", { postId: "0".repeat(64), reason: "spam" }), /post not found/);
 });

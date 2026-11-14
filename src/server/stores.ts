@@ -18,7 +18,17 @@ export interface ExtrasStore {
   /** Stores a sealed revocation under its id and subject. False if that id is already stored. */
   addRevocation(id: string, subject: string, r: RegisteredRevocation): Promise<boolean>;
   revocation(id: string): Promise<RegisteredRevocation | null>;
-  revocationsFor(subjects: string[]): Promise<RegisteredRevocation[]>;
+  /**
+   * Revocations about these subjects, by register position, after `after` (default: from the start),
+   * at most `limit` (default: all), only those signed by `signers` when given.
+   */
+  revocationsFor(subjects: string[], opts?: RevocationQuery): Promise<RegisteredRevocation[]>;
+}
+
+export interface RevocationQuery {
+  signers?: string[];
+  after?: number;
+  limit?: number;
 }
 
 export class MemoryExtras implements ExtrasStore {
@@ -55,8 +65,12 @@ export class MemoryExtras implements ExtrasStore {
   async revocation(id: string) {
     return this.revs.get(id)?.r ?? null;
   }
-  async revocationsFor(subjects: string[]) {
-    return [...this.revs.values()].filter((x) => subjects.includes(x.subject)).map((x) => x.r).sort((a, b) => a.index - b.index);
+  async revocationsFor(subjects: string[], q: RevocationQuery = {}) {
+    return [...this.revs.values()]
+      .filter((x) => subjects.includes(x.subject) && (!q.signers || q.signers.includes(x.r.revocation.body.by)) && x.r.index > (q.after ?? -1))
+      .map((x) => x.r)
+      .sort((a, b) => a.index - b.index)
+      .slice(0, q.limit ?? Infinity);
   }
 }
 
@@ -86,12 +100,25 @@ CREATE INDEX IF NOT EXISTS revocations_subject ON revocations(subject);
 CREATE TABLE IF NOT EXISTS daily_stats (day TEXT NOT NULL, kind TEXT NOT NULL, n INTEGER NOT NULL, PRIMARY KEY (day, kind));
 `;
 
-/** Counts today's writes (UTC day) and returns the new total. Used by the daily cap. */
-export async function countDailyWrite(db: D1Like, now = new Date()): Promise<number> {
+/**
+ * Daily caps (UTC day): plain entries and cosignatures share one counter, revocations have their own,
+ * so that filling the register with fingerprints can never stop an owner from revoking.
+ */
+export type CapBucket = "entries" | "revocations";
+const capKey = (bucket: CapBucket, now: Date) => {
   const day = now.toISOString().slice(0, 10);
-  await db.prepare("INSERT INTO daily_writes (day, n) VALUES (?, 1) ON CONFLICT(day) DO UPDATE SET n = n + 1").bind(day).run();
-  const r = await db.prepare("SELECT n FROM daily_writes WHERE day = ?").bind(day).first<{ n: number }>();
+  return bucket === "entries" ? day : `${day}:${bucket}`;
+};
+
+/** Today's count of successful writes in this bucket. */
+export async function dailyWrites(db: D1Like, bucket: CapBucket, now = new Date()): Promise<number> {
+  const r = await db.prepare("SELECT n FROM daily_writes WHERE day = ?").bind(capKey(bucket, now)).first<{ n: number }>();
   return r?.n ?? 0;
+}
+
+/** Counts one successful write in this bucket. */
+export async function countDailyWrite(db: D1Like, bucket: CapBucket, now = new Date()): Promise<void> {
+  await db.prepare("INSERT INTO daily_writes (day, n) VALUES (?, 1) ON CONFLICT(day) DO UPDATE SET n = n + 1").bind(capKey(bucket, now)).run();
 }
 
 const hexToBytes = (h: string) => Uint8Array.from(h.match(/../g)!.map((x) => parseInt(x, 16)));
@@ -176,11 +203,14 @@ export class D1Store implements LogStore, ExtrasStore {
     const r = await this.db.prepare("SELECT idx, time, revocation FROM revocations WHERE id = ?").bind(id).first<RevRow>();
     return r ? fromRevRow(r) : null;
   }
-  async revocationsFor(subjects: string[]) {
+  async revocationsFor(subjects: string[], q: RevocationQuery = {}) {
     if (!subjects.length) return [];
+    const marks = (xs: string[]) => xs.map(() => "?").join(", ");
+    const bySigner = q.signers?.length ? ` AND json_extract(revocation, '$.body.by') IN (${marks(q.signers)})` : "";
+    const limit = q.limit === undefined ? "" : " LIMIT ?";
     const r = await this.db
-      .prepare(`SELECT idx, time, revocation FROM revocations WHERE subject IN (${subjects.map(() => "?").join(", ")}) ORDER BY idx LIMIT 100`)
-      .bind(...subjects)
+      .prepare(`SELECT idx, time, revocation FROM revocations WHERE subject IN (${marks(subjects)})${bySigner} AND idx > ? ORDER BY idx${limit}`)
+      .bind(...subjects, ...(q.signers?.length ? q.signers : []), q.after ?? -1, ...(q.limit === undefined ? [] : [q.limit]))
       .all<RevRow>();
     return r.results.map(fromRevRow);
   }

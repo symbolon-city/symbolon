@@ -1,12 +1,14 @@
 // Cloudflare Worker entry point for the register.
 // Bindings: DB (D1 database), REGISTER_SECRET_KEY (secret, 32-byte hex),
-// WRITE_LIMIT (Cloudflare rate limiter, per client), DAILY_WRITE_CAP (optional, default 5000).
+// WRITE_LIMIT (Cloudflare rate limiter, per client), DAILY_WRITE_CAP (optional, default 5000: plain entries
+// and cosignatures), DAILY_REVOCATION_CAP (optional, default 20000: revocations have their own cap).
 // Cron: anchors the latest head in Bitcoin once a day and upgrades pending anchors hourly.
 
 import { keyPairFromSecret } from "../src/keys.js";
 import { Register } from "../src/register.js";
 import { anchorLatest, handle, upgradePending, type AppDeps } from "../src/server/app.js";
-import { D1Store, SCHEMA, countDailyWrite, type D1Like } from "../src/server/stores.js";
+import { writeGate } from "../src/server/gate.js";
+import { D1Store, SCHEMA, type D1Like } from "../src/server/stores.js";
 import { D1Stats } from "../src/server/stats.js";
 
 interface Env {
@@ -15,17 +17,7 @@ interface Env {
   BASE_URL?: string;
   WRITE_LIMIT?: { limit(o: { key: string }): Promise<{ success: boolean }> };
   DAILY_WRITE_CAP?: string;
-}
-
-/** Anti-spam: per-client rate limit (Cloudflare binding) + total cap per UTC day. */
-function writeGate(env: Env) {
-  const cap = Number(env.DAILY_WRITE_CAP ?? 5000);
-  return async (req: Request): Promise<string | null> => {
-    const client = req.headers.get("cf-connecting-ip") ?? "unknown";
-    if (env.WRITE_LIMIT && !(await env.WRITE_LIMIT.limit({ key: client })).success) return "too many writes from this client, retry in a minute";
-    if ((await countDailyWrite(env.DB)) > cap) return "daily write cap reached, retry tomorrow (UTC)";
-    return null;
-  };
+  DAILY_REVOCATION_CAP?: string;
 }
 
 let schemaReady = false;
@@ -36,7 +28,7 @@ async function deps(env: Env, origin: string, defer?: (p: Promise<unknown>) => v
     schemaReady = true;
   }
   const store = new D1Store(env.DB);
-  return { register: new Register(keyPairFromSecret(env.REGISTER_SECRET_KEY), store), extras: store, baseUrl: env.BASE_URL ?? origin, allowWrite: writeGate(env), stats: new D1Stats(env.DB), defer };
+  return { register: new Register(keyPairFromSecret(env.REGISTER_SECRET_KEY), store), extras: store, baseUrl: env.BASE_URL ?? origin, ...writeGate(env), stats: new D1Stats(env.DB), defer };
 }
 
 export default {

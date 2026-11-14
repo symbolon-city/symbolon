@@ -44,7 +44,15 @@ export function isFullySigned(rec: SignedRecord): boolean {
   );
 }
 
-/** The fingerprint sent to the register. Reveals nothing: the clause root is salted. */
+/**
+ * The fingerprint sent to the register. Reveals nothing: the clause root is salted.
+ * Computed over the body and the parties' signatures in party order, and nothing else, so the same
+ * agreement always has the same fingerprint (extra fields or reordered signatures cannot make a second one).
+ */
 export function entryHash(rec: SignedRecord): string {
-  return digest(rec);
+  const signatures = rec.body.parties.flatMap((p) => {
+    const s = rec.signatures.find((x) => x.agent === p.agent);
+    return s ? [{ agent: s.agent, signature: s.signature }] : [];
+  });
+  return digest({ body: rec.body, signatures });
 }

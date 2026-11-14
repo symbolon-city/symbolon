@@ -3,7 +3,7 @@
 import type { Anchor } from "../anchor.js";
 import type { PublicKey } from "../keys.js";
 import type { Receipt, SignedTreeHead } from "../register.js";
-import type { RegisteredRevocation, Revocation } from "../revocation.js";
+import { fetchAllRevocations, type RegisteredRevocation, type Revocation } from "../revocation.js";
 
 export interface RegisterClient {
   info(): Promise<{ register_key: PublicKey }>;
@@ -14,8 +14,8 @@ export interface RegisterClient {
   latestAnchor(): Promise<{ anchor: Anchor; state: string } | null>;
   /** Seals a signed revocation; returns its id, position and time in the register. */
   revoke(r: Revocation): Promise<RegisteredRevocation & { id: string; receipt: Receipt }>;
-  /** Revocations about these subjects (mandate ids or keys). */
-  revocations(subjects: string[]): Promise<RegisteredRevocation[]>;
+  /** Every revocation about these subjects (mandate ids or keys), only by these signers when given. */
+  revocations(subjects: string[], signers?: PublicKey[]): Promise<RegisteredRevocation[]>;
 }
 
 export class HttpRegisterClient implements RegisterClient {
@@ -71,10 +71,7 @@ export class HttpRegisterClient implements RegisterClient {
     if (!res.ok) throw new Error(`register refused the revocation: ${body.error ?? `HTTP ${res.status}`}`);
     return body as RegisteredRevocation & { id: string; receipt: Receipt };
   }
-  async revocations(subjects: string[]) {
-    const q = new URLSearchParams(subjects.map((s) => ["subject", s]));
-    const r = await this.get<{ revocations: RegisteredRevocation[] }>(`/v1/revocations?${q}`);
-    if (!r) throw new Error("this register does not support revocations");
-    return r.revocations;
+  revocations(subjects: string[], signers?: PublicKey[]) {
+    return fetchAllRevocations((path) => this.get(path), subjects, signers);
   }
 }

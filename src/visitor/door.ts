@@ -113,7 +113,7 @@ export function buildVisitorServer(deps: DoorDeps): McpServer {
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     ({ mandate }) =>
-      run(() => checkMandate(mandate as unknown as Mandate, { ownerResolver: deps.ownerResolver, revocations: (s) => deps.register.revocations(s), now: now() })),
+      run(() => checkMandate(mandate as unknown as Mandate, { ownerResolver: deps.ownerResolver, revocations: (s, k) => deps.register.revocations(s, k), now: now() })),
   );
 
   server.registerTool(
@@ -165,7 +165,7 @@ export function buildVisitorServer(deps: DoorDeps): McpServer {
           trustedLogs: [info.register_key],
           ownerResolver: deps.ownerResolver,
           bitcoin: deps.bitcoin,
-          revocations: (s) => deps.register.revocations(s),
+          revocations: (s, k) => deps.register.revocations(s, k),
         });
       }),
   );

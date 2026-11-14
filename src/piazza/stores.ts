@@ -3,6 +3,7 @@
 import type { D1Like } from "../server/stores.js";
 import type { PiazzaStore, PiazzaSummary, StoredContact, StoredPost, StoredRemoval, StoredReport } from "./app.js";
 import type { Tier } from "./guide.js";
+import { inSite } from "./site.js";
 
 export class MemoryPiazzaStore implements PiazzaStore {
   private nonces = new Set<string>();
@@ -46,11 +47,11 @@ export class MemoryPiazzaStore implements PiazzaStore {
   async post(id: string) {
     return this.postsById.get(id) ?? null;
   }
-  async posts(f: { kind?: string; category?: string; now: string; limit: number }) {
+  async posts(f: { kind?: string; category?: string; now: string; limit: number; offset?: number }) {
     return [...this.postsById.values()]
       .filter((p) => p.status === "active" && p.content.expiresAt > f.now && (!f.kind || p.content.kind === f.kind) && (!f.category || p.content.category === f.category))
       .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
-      .slice(0, f.limit);
+      .slice(f.offset ?? 0, (f.offset ?? 0) + f.limit);
   }
   async withdraw(id: string) {
     const p = this.postsById.get(id);
@@ -67,16 +68,22 @@ export class MemoryPiazzaStore implements PiazzaStore {
     const p = this.postsById.get(id);
     if (p && p.status === "active") p.status = "revoked";
   }
-  async countPostsByOwner(owner: string, since: string) {
-    return [...this.postsById.values()].filter((p) => p.ownerDomain === owner && p.createdAt >= since).length;
+  async countPostsByOwner(site: string, since: string) {
+    return [...this.postsById.values()].filter((p) => inSite(p.ownerDomain, site) && p.createdAt >= since).length;
   }
-  async countActiveByOwner(owner: string, now: string) {
-    return [...this.postsById.values()].filter((p) => p.ownerDomain === owner && p.status === "active" && p.content.expiresAt > now).length;
+  async countActiveByOwner(site: string, now: string) {
+    return [...this.postsById.values()].filter((p) => inSite(p.ownerDomain, site) && p.status === "active" && p.content.expiresAt > now).length;
   }
-  async agentsOfOwner(owner: string) {
-    const fromPosts = [...this.postsById.values()].filter((p) => p.ownerDomain === owner).map((p) => p.agent);
-    const fromContacts = this.contacts.filter((c) => c.fromOwner === owner).map((c) => c.fromAgent);
+  async agentsOfOwner(site: string) {
+    const fromPosts = [...this.postsById.values()].filter((p) => inSite(p.ownerDomain, site)).map((p) => p.agent);
+    const fromContacts = this.contacts.filter((c) => inSite(c.fromOwner, site)).map((c) => c.fromAgent);
     return [...new Set([...fromPosts, ...fromContacts])];
+  }
+  async newOwnerDomains(since: string) {
+    const first = new Map<string, string>();
+    for (const [d, at] of [...[...this.postsById.values()].map((p) => [p.ownerDomain, p.createdAt]), ...this.contacts.map((c) => [c.fromOwner, c.createdAt])])
+      if (!first.has(d) || at < first.get(d)!) first.set(d, at);
+    return [...first].filter(([, at]) => at >= since).map(([d]) => d);
   }
   async addContact(c: StoredContact) {
     if (this.contacts.some((x) => x.postId === c.postId && x.fromAgent === c.fromAgent)) return false;
@@ -111,12 +118,12 @@ export class MemoryPiazzaStore implements PiazzaStore {
   async setSealedDoc(fp: string, index: number) {
     if (!this.sealedDocs.has(fp)) this.sealedDocs.set(fp, index);
   }
-  async summary(now: string): Promise<PiazzaSummary> {
+  async summary(now: string, siteOf: (d: string) => string = (d) => d): Promise<PiazzaSummary> {
     const active = await this.posts({ now, limit: 1e9 });
     return {
       activePosts: active.length,
       demoPosts: active.filter((p) => p.demo).length,
-      owners: new Set(active.map((p) => p.ownerDomain)).size,
+      owners: new Set(active.map((p) => siteOf(p.ownerDomain))).size,
       agents: new Set(active.map((p) => p.agent)).size,
       contacts: this.contacts.length,
       reports: this.reports.length,
@@ -200,10 +207,10 @@ export class D1PiazzaStore implements PiazzaStore {
     const r = await this.db.prepare("SELECT * FROM posts WHERE id = ?").bind(id).first<PostRow>();
     return r ? toPost(r) : null;
   }
-  async posts(f: { kind?: string; category?: string; now: string; limit: number }) {
+  async posts(f: { kind?: string; category?: string; now: string; limit: number; offset?: number }) {
     const r = await this.db
-      .prepare("SELECT * FROM posts WHERE status = 'active' AND expires_at > ? AND (? IS NULL OR kind = ?) AND (? IS NULL OR category = ?) ORDER BY created_at DESC LIMIT ?")
-      .bind(f.now, f.kind ?? null, f.kind ?? null, f.category ?? null, f.category ?? null, f.limit)
+      .prepare("SELECT * FROM posts WHERE status = 'active' AND expires_at > ? AND (? IS NULL OR kind = ?) AND (? IS NULL OR category = ?) ORDER BY created_at DESC LIMIT ? OFFSET ?")
+      .bind(f.now, f.kind ?? null, f.kind ?? null, f.category ?? null, f.category ?? null, f.limit, f.offset ?? 0)
       .all<PostRow>();
     return r.results.map(toPost);
   }
@@ -220,20 +227,34 @@ export class D1PiazzaStore implements PiazzaStore {
   async markRevoked(id: string) {
     await this.db.prepare("UPDATE posts SET status = 'revoked' WHERE id = ? AND status = 'active'").bind(id).run();
   }
-  async countPostsByOwner(owner: string, since: string) {
-    const r = await this.db.prepare("SELECT COUNT(*) AS n FROM posts WHERE owner = ? AND created_at >= ?").bind(owner, since).first<{ n: number }>();
+  // A site matches its own domain and every subdomain (domains are checked lowercase letters, digits,
+  // hyphens and dots, so they hold no LIKE wildcards).
+  async countPostsByOwner(site: string, since: string) {
+    const r = await this.db.prepare("SELECT COUNT(*) AS n FROM posts WHERE (owner = ? OR owner LIKE ?) AND created_at >= ?").bind(site, "%." + site, since).first<{ n: number }>();
     return r?.n ?? 0;
   }
-  async countActiveByOwner(owner: string, now: string) {
-    const r = await this.db.prepare("SELECT COUNT(*) AS n FROM posts WHERE owner = ? AND status = 'active' AND expires_at > ?").bind(owner, now).first<{ n: number }>();
-    return r?.n ?? 0;
-  }
-  async agentsOfOwner(owner: string) {
+  async countActiveByOwner(site: string, now: string) {
     const r = await this.db
-      .prepare("SELECT agent FROM posts WHERE owner = ? UNION SELECT from_agent AS agent FROM contacts WHERE from_owner = ?")
-      .bind(owner, owner)
+      .prepare("SELECT COUNT(*) AS n FROM posts WHERE (owner = ? OR owner LIKE ?) AND status = 'active' AND expires_at > ?")
+      .bind(site, "%." + site, now)
+      .first<{ n: number }>();
+    return r?.n ?? 0;
+  }
+  async agentsOfOwner(site: string) {
+    const r = await this.db
+      .prepare("SELECT agent FROM posts WHERE owner = ? OR owner LIKE ? UNION SELECT from_agent AS agent FROM contacts WHERE from_owner = ? OR from_owner LIKE ?")
+      .bind(site, "%." + site, site, "%." + site)
       .all<{ agent: string }>();
     return r.results.map((x) => x.agent);
+  }
+  async newOwnerDomains(since: string) {
+    const r = await this.db
+      .prepare(
+        "SELECT owner FROM (SELECT owner, created_at FROM posts UNION ALL SELECT from_owner AS owner, created_at FROM contacts) GROUP BY owner HAVING MIN(created_at) >= ? LIMIT 2000",
+      )
+      .bind(since)
+      .all<{ owner: string }>();
+    return r.results.map((x) => x.owner);
   }
   async addContact(c: StoredContact) {
     try {
@@ -265,7 +286,12 @@ export class D1PiazzaStore implements PiazzaStore {
       postTitle: JSON.parse(x.post_content).title,
     }));
   }
-  async summary(now: string): Promise<PiazzaSummary> {
+  async summary(now: string, siteOf?: (d: string) => string): Promise<PiazzaSummary> {
+    const sites = siteOf
+      ? new Set(
+          (await this.db.prepare("SELECT DISTINCT owner FROM posts WHERE status = 'active' AND expires_at > ?").bind(now).all<{ owner: string }>()).results.map((x) => siteOf(x.owner)),
+        ).size
+      : null;
     const r = await this.db
       .prepare(
         "SELECT COUNT(*) AS posts, COALESCE(SUM(demo), 0) AS demo, COUNT(DISTINCT owner) AS owners, COUNT(DISTINCT agent) AS agents, " +
@@ -277,7 +303,7 @@ export class D1PiazzaStore implements PiazzaStore {
     return {
       activePosts: r?.posts ?? 0,
       demoPosts: r?.demo ?? 0,
-      owners: r?.owners ?? 0,
+      owners: sites ?? r?.owners ?? 0,
       agents: r?.agents ?? 0,
       contacts: r?.contacts ?? 0,
       reports: r?.reports ?? 0,

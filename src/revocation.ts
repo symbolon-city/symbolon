@@ -11,7 +11,7 @@
 
 import { digest } from "./hash.js";
 import { signValue, verifyValue, type KeyPair, type PublicKey } from "./keys.js";
-import { mandateId, type Mandate } from "./mandate.js";
+import { mandateId, ownerDomainProblem, type Mandate } from "./mandate.js";
 
 const HEX64 = /^[0-9a-f]{64}$/;
 const KEY = /^ed25519:[0-9a-f]{64}$/;
@@ -68,9 +68,9 @@ export function createRevocation(
   return { body, signature: signValue(body, signer) };
 }
 
-/** The fingerprint sealed in the register. */
+/** The fingerprint sealed in the register: of the signed body only, so nothing outside it can make a second id. */
 export function revocationId(r: Revocation): string {
-  return digest(r);
+  return digest(r.body);
 }
 
 /** What the revocation is about: a mandate id or a key. Used to look revocations up. */
@@ -83,15 +83,26 @@ export function subjectsOf(m: Mandate): string[] {
   return [mandateId(m), m.body.agent, m.body.owner.key];
 }
 
+/**
+ * The keys whose revocations can apply to this mandate: its owner key, its agent key and the other keys
+ * published at the owner's domain (when known). Lookups ask the register for these signers only, so
+ * revocations written by unrelated keys cannot crowd out the real one.
+ */
+export function signersOf(m: Mandate, ownerKeys: PublicKey[] | null = null): PublicKey[] {
+  return [...new Set([m.body.owner.key, m.body.agent, ...(ownerKeys ?? [])])];
+}
+
 /** Structural and signature check. Returns a problem, or null if well formed and signed by `by`. */
 export function revocationProblem(r: Revocation, opts: { skipSignature?: boolean; now?: Date } = {}): string | null {
   const b = r?.body;
   if (!b || typeof b !== "object") return "not a revocation";
+  if (Object.keys(r).some((k) => k !== "body" && k !== "signature")) return "unexpected fields in revocation";
   if (b.type !== "symbolon/revocation" || b.v !== 1) return "not a revocation";
   if (typeof b.by !== "string" || !KEY.test(b.by)) return "invalid signer key";
-  if (b.ownerDomain !== undefined && (typeof b.ownerDomain !== "string" || !/^[a-z0-9.-]{1,253}$/i.test(b.ownerDomain))) return "invalid owner domain";
+  if (b.ownerDomain !== undefined && ownerDomainProblem(b.ownerDomain)) return "invalid owner domain";
   const t = b.target;
   if (!t || typeof t !== "object") return "invalid target";
+  if (Object.keys(t).some((k) => k !== "kind" && k !== (t.kind === "mandate" ? "id" : "key"))) return "unexpected fields in revocation target";
   if (t.kind === "mandate") {
     if (typeof t.id !== "string" || !HEX64.test(t.id)) return "invalid mandate id";
   } else if (t.kind === "agent" || t.kind === "owner-key") {
@@ -131,5 +142,36 @@ export function revocationsOf(m: Mandate, found: RegisteredRevocation[], ownerKe
   return found.filter((x) => revokes(x.revocation, m, ownerKeys)).sort((a, b) => a.index - b.index);
 }
 
-/** Looks up revocations by subject (mandate ids and keys), e.g. from the register. */
-export type RevocationSource = (subjects: string[]) => Promise<RegisteredRevocation[]>;
+/**
+ * Looks up revocations by subject (mandate ids and keys), e.g. from the register. `signers`, when given,
+ * limits the answer to revocations signed by those keys (see signersOf). A source must return every match
+ * or throw: never a silently shortened list.
+ */
+export type RevocationSource = (subjects: string[], signers?: PublicKey[]) => Promise<RegisteredRevocation[]>;
+
+/** Pages read at most by fetchAllRevocations (100 each): more than that is treated as "cannot check". */
+export const MAX_REVOCATION_PAGES = 20;
+
+/**
+ * Reads every page of GET /v1/revocations for these subjects and signers. `get` fetches one path and
+ * returns the parsed answer. Throws if the register does not answer or there are too many pages, so a
+ * caller never mistakes a partial list for a complete one.
+ */
+export async function fetchAllRevocations(
+  get: (path: string) => Promise<{ revocations: RegisteredRevocation[]; next?: number } | null>,
+  subjects: string[],
+  signers?: PublicKey[],
+): Promise<RegisteredRevocation[]> {
+  const out: RegisteredRevocation[] = [];
+  let after: number | undefined;
+  for (let page = 0; page < MAX_REVOCATION_PAGES; page++) {
+    const q = new URLSearchParams([...subjects.map((s) => ["subject", s]), ...(signers ?? []).map((k) => ["signer", k]), ...(after === undefined ? [] : [["after", String(after)]])]);
+    const r = await get(`/v1/revocations?${q}`);
+    if (!r || !Array.isArray(r.revocations)) throw new Error("this register does not support revocations");
+    out.push(...r.revocations);
+    if (typeof r.next !== "number") return out;
+    if (after !== undefined && r.next <= after) throw new Error("register returned a bad revocation page");
+    after = r.next;
+  }
+  throw new Error("too many revocations for these subjects: cannot check them");
+}

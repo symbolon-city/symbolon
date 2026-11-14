@@ -4,6 +4,7 @@
 // so owners who published it before the rename keep working.
 
 import type { PublicKey } from "./keys.js";
+import { ownerDomainProblem } from "./mandate.js";
 
 export const WELL_KNOWN_PATH = "/.well-known/symbolon.json";
 export const LEGACY_WELL_KNOWN_PATH = "/.well-known/accord.json";
@@ -37,7 +38,7 @@ export function httpOwnerResolver(fetchImpl: typeof fetch = fetch): OwnerResolve
     }
   };
   return async (domain) => {
-    if (!/^[a-z0-9.-]+$/i.test(domain)) return null;
+    if (ownerDomainProblem(domain)) return null; // one lowercase spelling, no IP addresses, no "localhost"
     return (await read(domain, WELL_KNOWN_PATH)) ?? (await read(domain, LEGACY_WELL_KNOWN_PATH));
   };
 }

@@ -16,18 +16,26 @@ export interface AppDeps {
   /** Public base URL, used in the self-description. */
   baseUrl: string;
   /**
-   * Anti-spam gate for writes (new entries, cosignatures). Returns null to allow,
+   * Anti-spam gate for writes, asked before the request is read. Returns null to allow,
    * or a short reason to refuse with HTTP 429. Absent = no limit (tests, local use).
+   * Revocations have their own daily cap, so a flood of plain entries can never block them.
    */
-  allowWrite?: (req: Request) => Promise<string | null>;
+  allowWrite?: (req: Request, kind: WriteKind) => Promise<string | null>;
+  /** Counts a write that succeeded (only those count towards the daily caps). */
+  countWrite?: (kind: WriteKind) => Promise<void>;
   /** Anonymous public counters (/stats). Absent = not counted. */
   stats?: StatsStore;
   /** Runs work after the response (Cloudflare ctx.waitUntil); absent = awaited inline. */
   defer?: (p: Promise<unknown>) => void;
 }
 
+export type WriteKind = "entry" | "revocation" | "cosignature";
+
 const HEX64 = /^[0-9a-f]{64}$/;
+const KEY = /^ed25519:[0-9a-f]{64}$/;
 const MAX_BODY = 8192;
+/** Revocations per page of GET /v1/revocations; `next` gives the following page. */
+export const REVOCATIONS_PAGE = 100;
 
 const CORS = {
   "access-control-allow-origin": "*",
@@ -87,11 +95,12 @@ export function describe(deps: AppDeps) {
       "POST /v1/cosignatures": "witnesses publish their countersignature of a head",
       "GET /v1/cosignatures/{size}": "countersignatures of the head at that size",
       "POST /v1/revocations": "body: a signed revocation (mandate, agent key or owner key) → sealed in the register; applies from its register position",
-      "GET /v1/revocations?subject={mandate id or key}": "revocations about these subjects (repeat subject, at most 10); apply them only if signed by an authorized key",
+      "GET /v1/revocations?subject={mandate id or key}&signer={key}&after={index}":
+        `revocations about these subjects (repeat subject, at most 10), optionally only those signed by these keys (repeat signer, at most 30), ${REVOCATIONS_PAGE} per page: if the answer has "next", ask again with after=next. Apply them only if signed by an authorized key`,
       "GET /v1/revocations/{id}": "one revocation, with its receipt",
       "GET /stats": "public page with anonymous daily usage counters (JSON at /v1/stats)",
     },
-    limits: "writes are rate-limited per client and capped per day; HTTP 429 means try again later",
+    limits: "writes are rate-limited per client and capped per day (revocations have their own cap); HTTP 429 means try again later",
     base_url: deps.baseUrl,
   };
 }
@@ -106,6 +115,39 @@ export async function handle(req: Request, deps: AppDeps): Promise<Response> {
     else await p;
   }
   return res;
+}
+
+/** The three writes: a plain fingerprint, a revocation, a witness cosignature. */
+async function write(req: Request, kind: WriteKind, deps: AppDeps): Promise<Response> {
+  const { register, extras } = deps;
+  if (kind === "entry") {
+    const body = (await readJson(req)) as { entry?: unknown };
+    if (typeof body?.entry !== "string" || !HEX64.test(body.entry)) return error(400, "entry must be a sha256 hex fingerprint");
+    return json(await register.append(body.entry), 201);
+  }
+  if (kind === "revocation") {
+    const r = (await readJson(req)) as Revocation;
+    const problem = revocationProblem(r, { now: new Date() });
+    if (problem) return error(400, problem);
+    const id = revocationId(r);
+    const known = await extras.revocation(id);
+    if (known) return json({ id, ...known, receipt: await register.receipt(id, known.index) });
+    // A revocation takes its position when it is published here. If its fingerprint is already in the
+    // register as a plain entry (sealed earlier through /v1/entries), accepting it would backdate it.
+    if ((await register.store.indexOf(id)) !== null)
+      return error(409, "this revocation's fingerprint is already in the register as a plain entry, so it cannot take a position now: sign the revocation again (a new createdAt gives a new fingerprint)");
+    const stored: Revocation = { body: r.body, signature: r.signature };
+    const receipt = await register.append(id);
+    const at = await register.headAt(receipt.index + 1);
+    const sealed: RegisteredRevocation = { revocation: stored, index: receipt.index, time: at?.time ?? receipt.head.time };
+    await extras.addRevocation(id, revocationSubject(stored), sealed);
+    return json({ id, ...sealed, receipt }, 201);
+  }
+  const c = (await readJson(req)) as Cosignature;
+  const head = typeof c?.size === "number" ? await register.headAt(c.size) : null;
+  if (!head || !verifyCosignature(c, head)) return error(400, "cosignature does not match a head of this register");
+  await extras.addCosignature(c);
+  return json({ ok: true }, 201);
 }
 
 async function route(req: Request, deps: AppDeps): Promise<Response> {
@@ -130,38 +172,33 @@ async function route(req: Request, deps: AppDeps): Promise<Response> {
       return new Response(statsPage({ ...summary, days }), { headers: { "content-type": "text/html; charset=utf-8", "cache-control": "public, max-age=60" } });
     }
 
-    if (req.method === "POST" && (path === "/v1/entries" || path === "/v1/cosignatures" || path === "/v1/revocations") && deps.allowWrite) {
-      const refused = await deps.allowWrite(req);
-      if (refused) return error(429, refused);
-    }
-
-    if (req.method === "POST" && path === "/v1/entries") {
-      const body = (await readJson(req)) as { entry?: unknown };
-      if (typeof body?.entry !== "string" || !HEX64.test(body.entry)) return error(400, "entry must be a sha256 hex fingerprint");
-      return json(await register.append(body.entry), 201);
-    }
-
-    if (req.method === "POST" && path === "/v1/revocations") {
-      const r = (await readJson(req)) as Revocation;
-      const problem = revocationProblem(r, { now: new Date() });
-      if (problem) return error(400, problem);
-      const id = revocationId(r);
-      const known = await extras.revocation(id);
-      if (known) return json({ id, ...known, receipt: await register.receipt(id, known.index) });
-      const receipt = await register.append(id);
-      const at = await register.headAt(receipt.index + 1);
-      const sealed: RegisteredRevocation = { revocation: r, index: receipt.index, time: at?.time ?? receipt.head.time };
-      await extras.addRevocation(id, revocationSubject(r), sealed);
-      return json({ id, ...sealed, receipt }, 201);
+    const kind: WriteKind | null =
+      req.method !== "POST" ? null : path === "/v1/entries" ? "entry" : path === "/v1/revocations" ? "revocation" : path === "/v1/cosignatures" ? "cosignature" : null;
+    if (kind) {
+      if (deps.allowWrite) {
+        const refused = await deps.allowWrite(req, kind);
+        if (refused) return error(429, refused);
+      }
+      const res = await write(req, kind, deps);
+      if (res.status === 201 && deps.countWrite) await deps.countWrite(kind).catch(() => {});
+      return res;
     }
 
     if (req.method === "GET" && path === "/v1/revocations") {
       const subjects = [...new Set(url.searchParams.getAll("subject"))];
       if (!subjects.length || subjects.length > 10) return error(400, "give 1 to 10 subject parameters");
-      if (subjects.some((x) => !HEX64.test(x) && !/^ed25519:[0-9a-f]{64}$/.test(x))) return error(400, "a subject is a mandate id (64 hex) or a key (ed25519:<64 hex>)");
+      if (subjects.some((x) => !HEX64.test(x) && !KEY.test(x))) return error(400, "a subject is a mandate id (64 hex) or a key (ed25519:<64 hex>)");
+      const signers = [...new Set(url.searchParams.getAll("signer"))];
+      if (signers.length > 30 || signers.some((x) => !KEY.test(x))) return error(400, "give at most 30 signer parameters, each a key (ed25519:<64 hex>)");
+      const afterParam = url.searchParams.get("after");
+      const after = afterParam === null ? -1 : intParam(afterParam, "after");
+      const page = await extras.revocationsFor(subjects, { signers: signers.length ? signers : undefined, after, limit: REVOCATIONS_PAGE + 1 });
+      const more = page.length > REVOCATIONS_PAGE;
+      const revocations = more ? page.slice(0, REVOCATIONS_PAGE) : page;
       return json({
-        revocations: await extras.revocationsFor(subjects),
-        note: "Apply a revocation only if it is signed by the mandate's owner key, a key published at the owner's domain, or (for its own mandate or key) the agent. It applies from its register position.",
+        revocations,
+        ...(more ? { next: revocations[revocations.length - 1].index } : {}),
+        note: "Apply a revocation only if it is signed by the mandate's owner key, a key published at the owner's domain, or (for its own mandate or key) the agent. It applies from its register position. If next is present there are more: ask again with after=next.",
       });
     }
 
@@ -201,14 +238,6 @@ async function route(req: Request, deps: AppDeps): Promise<Response> {
     if (req.method === "GET" && (m = path.match(/^\/v1\/anchors\/(\d+)$/))) {
       const a = await extras.anchor(Number(m[1]));
       return a ? json(a) : error(404, "no anchor at that size");
-    }
-
-    if (req.method === "POST" && path === "/v1/cosignatures") {
-      const c = (await readJson(req)) as Cosignature;
-      const head = typeof c?.size === "number" ? await register.headAt(c.size) : null;
-      if (!head || !verifyCosignature(c, head)) return error(400, "cosignature does not match a head of this register");
-      await extras.addCosignature(c);
-      return json({ ok: true }, 201);
     }
 
     if (req.method === "GET" && (m = path.match(/^\/v1\/cosignatures\/(\d+)$/))) {

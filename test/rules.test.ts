@@ -5,11 +5,11 @@ import { DatabaseSync } from "node:sqlite";
 import { createMandate, generateKeyPair, staticOwnerResolver } from "../src/index.js";
 import { digest } from "../src/hash.js";
 import { handlePiazza, type PiazzaDeps } from "../src/piazza/app.js";
-import { LIMITS, POST_LIMITS, signEnvelope, type Action } from "../src/piazza/messages.js";
+import { LIMITS, MANDATE_RULES, POST_LIMITS, signEnvelope, type Action } from "../src/piazza/messages.js";
 import { removalRecord, storedRemoval } from "../src/piazza/removals.js";
 import { ENVELOPES_PER_MINUTE, REPORT_LIMITS, RULES_VERSION, clause, rulesDocument, rulesFingerprint } from "../src/piazza/rules.js";
 import { D1PiazzaStore, MemoryPiazzaStore, PIAZZA_MIGRATIONS, PIAZZA_SCHEMA, removalStatements, toSqlText } from "../src/piazza/stores.js";
-import type { D1Like } from "../src/server/stores.js";
+import { sqliteD1 } from "./helpers.js";
 
 const ORIGIN = "https://piazza.example";
 const later = (days: number) => new Date(Date.now() + days * 86_400_000).toISOString();
@@ -17,15 +17,20 @@ const later = (days: number) => new Date(Date.now() + days * 86_400_000).toISOSt
 // If this fails, version 1 of the published rules was changed. Published versions never change:
 // add version 2 in src/piazza/rules.ts instead (freezing version 1 as it is) and announce it in UPCOMING.
 const RULES_V1_FINGERPRINT = "d75237faa3dff84ef0bc270ebfece8e9f3c18b0af3c4ed86f12bb7d624ea158f";
+// Version 2 (security correction of 14/11/2026), same rule: never change it, add version 3.
+const RULES_V2_FINGERPRINT = "d9994a6556ea2d3bee10459e7104fcaabf3ce5e3875161db5a5c69e553d4d9cf";
 
 test("rules: version 1 is fixed once published", () => {
   assert.equal(rulesFingerprint(1), RULES_V1_FINGERPRINT);
+  assert.equal(rulesFingerprint(2), RULES_V2_FINGERPRINT);
+  assert.equal(rulesDocument(1)!.changes, undefined);
+  assert.match(rulesDocument(2)!.changes![0], /Security correction/);
   assert.equal(rulesDocument(99), null);
 });
 
 test("rules: the text states the limits the code enforces", () => {
   const all = JSON.stringify(rulesDocument());
-  for (const n of [LIMITS.activePostsPerOwner, LIMITS.postsPerOwnerPerDay, LIMITS.agentsPerOwner, LIMITS.contactsPerAgentPerDay, POST_LIMITS.titleMaxChars, POST_LIMITS.textMaxChars])
+  for (const n of [LIMITS.activePostsPerOwner, LIMITS.postsPerOwnerPerDay, LIMITS.agentsPerOwner, LIMITS.contactsPerAgentPerDay, LIMITS.newOwnersPerDay, MANDATE_RULES.scopeMaxChars, POST_LIMITS.titleMaxChars, POST_LIMITS.textMaxChars])
     assert.match(all, new RegExp(`\\b${n}\\b`));
   const toml = readFileSync(new URL("../wrangler-piazza.toml", import.meta.url), "utf8");
   assert.match(toml, new RegExp(`simple = \\{ limit = ${ENVELOPES_PER_MINUTE}, period = 60 \\}`), "ENVELOPES_PER_MINUTE must match wrangler-piazza.toml");
@@ -67,8 +72,12 @@ test("rules: served as JSON and HTML, sealed in the register only once", async (
   assert.equal(first.sealedInRegister, 0);
   assert.equal(first.upcoming, null);
   assert.deepEqual(sealed, [first.fingerprint]);
-  assert.equal((await get("/v1/rules/1")).sealedInRegister, 0);
-  assert.equal(sealed.length, 1);
+  assert.equal((await get(`/v1/rules/${RULES_VERSION}`)).sealedInRegister, 0);
+  assert.equal(sealed.length, 1, "the current version is sealed only once");
+  const v1 = await get("/v1/rules/1");
+  assert.equal(v1.current, false);
+  assert.equal(v1.sealedInRegister, 1, "an earlier version read for the first time is sealed too");
+  assert.deepEqual(first.versions, [1, 2]);
   const html = await req("/v1/rules", { headers: { accept: "text/html" } });
   assert.match(await html.text(), /<b>8\.3<\/b>/);
   assert.equal((await req("/v1/rules/99")).status, 404);
@@ -125,26 +134,6 @@ test("removals: only illegal content or an authority order; public, verifiable, 
   assert.equal(digest(rebuilt), r.fingerprint, "anyone can recompute the sealed fingerprint");
   assert.equal((await get("/v1/summary")).removals, 1);
 });
-
-// A D1 stand-in over node:sqlite, to check the SQL that runs in production.
-function sqliteD1(db: DatabaseSync): D1Like & { exec(sql: string): void } {
-  const stmt = (sql: string, values: unknown[] = []) => ({
-    bind: (...v: unknown[]) => stmt(sql, v),
-    first: async <T>() => (db.prepare(sql).get(...(values as never[])) as T) ?? null,
-    all: async <T>() => ({ results: db.prepare(sql).all(...(values as never[])) as T[] }),
-    run: async () => db.prepare(sql).run(...(values as never[])),
-    sql,
-    values,
-  });
-  return {
-    prepare: (sql) => stmt(sql),
-    batch: async (stmts) => {
-      for (const s of stmts) await s.run();
-      return [];
-    },
-    exec: (sql) => db.exec(sql),
-  };
-}
 
 test("D1 store: reports, removals (also as SQL text for wrangler) and sealed rules", async () => {
   const sqlite = new DatabaseSync(":memory:");
