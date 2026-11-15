@@ -13,16 +13,16 @@ function site(files: Record<string, unknown>): typeof fetch {
 test("owner keys are read from symbolon.json, and still from the earlier accord.json", async () => {
   const resolve = httpOwnerResolver(
     site({
-      "new.example/.well-known/symbolon.json": ownerFile("new.example", ["ed25519:aa"]),
-      "old.example/.well-known/accord.json": { accord: 1, domain: "old.example", keys: ["ed25519:bb"] },
-      "both.example/.well-known/symbolon.json": ownerFile("both.example", ["ed25519:cc"]),
-      "both.example/.well-known/accord.json": { accord: 1, domain: "both.example", keys: ["ed25519:dd"] },
-      "liar.example/.well-known/symbolon.json": ownerFile("someone-else.example", ["ed25519:ee"]),
+      "new.example/.well-known/symbolon.json": ownerFile("new.example", ["ed25519:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]),
+      "old.example/.well-known/accord.json": { accord: 1, domain: "old.example", keys: ["ed25519:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"] },
+      "both.example/.well-known/symbolon.json": ownerFile("both.example", ["ed25519:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"]),
+      "both.example/.well-known/accord.json": { accord: 1, domain: "both.example", keys: ["ed25519:dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"] },
+      "liar.example/.well-known/symbolon.json": ownerFile("someone-else.example", ["ed25519:eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee"]),
     }),
   );
-  assert.deepEqual(await resolve("new.example"), ["ed25519:aa"]);
-  assert.deepEqual(await resolve("old.example"), ["ed25519:bb"]);
-  assert.deepEqual(await resolve("both.example"), ["ed25519:cc"]);
+  assert.deepEqual(await resolve("new.example"), ["ed25519:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"]);
+  assert.deepEqual(await resolve("old.example"), ["ed25519:bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"]);
+  assert.deepEqual(await resolve("both.example"), ["ed25519:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc"]);
   assert.equal(await resolve("liar.example"), null);
   assert.equal(await resolve("nobody.example"), null);
   assert.equal(await resolve("bad domain/../x"), null);

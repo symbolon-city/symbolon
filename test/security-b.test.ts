@@ -207,8 +207,9 @@ test("B5: an 'offer' that is really an action record is refused", async () => {
 
 test("B5: proposing to an unverified owner is refused too, unless the owner allows it", async () => {
   const { victim, attackerMandate } = await victimAndAttacker(false);
-  await assert.rejects(victim.propose({ counterparty: attackerMandate, clauses: { object: "paper" } }), /owner key not published/);
-  const offer = await victim.propose({ counterparty: attackerMandate, clauses: { object: "paper" }, allowUnverifiedOwner: true });
+  const clauses = { object: "paper", amount: { value: "10.00", currency: "EUR" } };
+  await assert.rejects(victim.propose({ counterparty: attackerMandate, clauses }), /owner key not published/);
+  const offer = await victim.propose({ counterparty: attackerMandate, clauses, allowUnverifiedOwner: true });
   assert.equal(offer.type, "accord/offer");
 });
 

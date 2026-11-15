@@ -111,3 +111,12 @@ export function amountLeq(a: string, b: string): boolean {
   };
   return scale(a) <= scale(b);
 }
+
+/** True if a clause value is, or contains at any depth, an object shaped like an amount ({value, currency} or {amount, currency}). */
+export function looksLikeAmount(v: unknown, depth = 0): boolean {
+  if (depth > 20 || v === null || typeof v !== "object") return false;
+  if (Array.isArray(v)) return v.some((x) => looksLikeAmount(x, depth + 1));
+  const o = v as Record<string, unknown>;
+  if ("currency" in o && ("value" in o || "amount" in o)) return true;
+  return Object.values(o).some((x) => looksLikeAmount(x, depth + 1));
+}

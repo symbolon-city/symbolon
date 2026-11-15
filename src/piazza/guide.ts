@@ -185,6 +185,8 @@ export const GUIDE_LIMITS = {
 
 /** Haiku 5.5 prices, in millionths of a dollar per token (up to 100K-token prompts). */
 export const PRICE_MICRO_USD = { input: 0.1, output: 0.5 };
+/** The longest answer the Guide's model may write (max_tokens in guide-claude.ts); used to reserve the budget. */
+export const GUIDE_MAX_OUTPUT_TOKENS = 400;
 
 export interface ModelAnswer {
   text: string;
@@ -251,23 +253,31 @@ export async function askGuide(
     body: { answer: why + " " + topicsList(), source: "unavailable", notice: NOTICE },
   });
   if (!deps.askModel) return unavailable("I have no answer prepared for this question.");
-  if ((await deps.store.counter(day, quotaName)) >= GUIDE_LIMITS.modelPerDay[who.tier])
+  // Quota and budget are RESERVED before the paid call, with one atomic increment each, and checked on the
+  // value that increment returned: questions arriving at the same moment cannot all read "below the limit".
+  if ((await deps.store.bump(day, quotaName)) > GUIDE_LIMITS.modelPerDay[who.tier])
     return unavailable(
       who.tier === "visitor"
         ? "You reached today's limit of new questions for visitors (citizens with an owner mandate get more)."
         : "You reached today's limit of new questions.",
     );
-  if ((await deps.store.counter(day, "guide:spent")) >= budget) return unavailable("The Guide answers only prepared questions for the rest of today.");
-
-  await deps.store.bump(day, quotaName);
+  const system = GUIDE_SYSTEM + knowledgeText();
+  // Worst case of one call: the whole prompt (about 3 characters per token, rounded up) and the maximum answer.
+  const reserve = Math.ceil(((system.length + q.length) / 3) * PRICE_MICRO_USD.input + GUIDE_MAX_OUTPUT_TOKENS * PRICE_MICRO_USD.output);
+  const spentWithMine = await deps.store.bump(day, "guide:spent", reserve);
+  if (spentWithMine - reserve >= budget) {
+    await deps.store.bump(day, "guide:spent", -reserve);
+    return unavailable("The Guide answers only prepared questions for the rest of today.");
+  }
   let m: ModelAnswer;
   try {
-    m = await deps.askModel(GUIDE_SYSTEM + knowledgeText(), q);
+    m = await deps.askModel(system, q);
   } catch {
+    await deps.store.bump(day, "guide:spent", -reserve);
     return unavailable("The Guide could not answer right now.");
   }
   const cost = Math.ceil(m.inputTokens * PRICE_MICRO_USD.input + m.outputTokens * PRICE_MICRO_USD.output);
-  await deps.store.bump(day, "guide:spent", cost);
+  if (cost !== reserve) await deps.store.bump(day, "guide:spent", cost - reserve);
   await deps.store.bump(day, "guide:model");
   const text = m.text.trim().slice(0, 1200);
   if (m.refused || !text) return unavailable("I cannot answer this question.");

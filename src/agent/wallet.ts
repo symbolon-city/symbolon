@@ -7,7 +7,7 @@ import type { Json } from "../canonical.js";
 import { clauseNamesProblem, clausesObject, commitClauses, disclose, verifyOpened, type OpenedClauses } from "../clauses.js";
 import { generateKeyPair, keyPairFromSecret, verifyValue, type KeyPair, type PublicKey } from "../keys.js";
 import { toHex } from "../bytes.js";
-import { amountLeq, mandateId, mandateProblem, verifyMandateSignature, withinValidity, type Amount, type Mandate } from "../mandate.js";
+import { amountLeq, looksLikeAmount, mandateId, mandateProblem, verifyMandateSignature, withinValidity, type Amount, type Mandate } from "../mandate.js";
 import { buildProof, verifyProof, type ProofBundle, type Report } from "../proof.js";
 import { createRecord, entryHash, isFullySigned, recordProblem, signRecord, type SignedRecord } from "../record.js";
 import type { Receipt } from "../register.js";
@@ -325,10 +325,22 @@ export class Wallet {
     });
   }
 
+  /**
+   * The mandate limit is checked on the "amount" clause, so under a mandate with a limit the agreement must
+   * state its price there, and nowhere else: a 999,999 EUR "price" next to (or instead of) a small "amount"
+   * would dodge the limit. Strings like "999999 EUR" inside free text cannot be told apart from prose: the
+   * full fix (amount as a field of the signed record, the only price that binds) comes with the launch register.
+   */
   private checkAmount(clauses: Record<string, Json>, m: Mandate) {
-    const amount = (Object.prototype.hasOwnProperty.call(clauses, "amount") ? clauses["amount"] : undefined) as unknown as Amount | undefined;
+    const has = Object.prototype.hasOwnProperty.call(clauses, "amount");
+    const amount = (has ? clauses["amount"] : undefined) as unknown as Amount | undefined;
     const max = m.body.maxAmount;
-    if (amount === undefined || !max) return;
+    if (!max) return;
+    for (const [name, value] of Object.entries(clauses))
+      if (name !== "amount" && looksLikeAmount(value))
+        throw new Error(`clause "${name}" contains an amount: under a mandate with a spending limit the price goes only in the "amount" clause`);
+    if (amount === undefined)
+      throw new Error(`the mandate of ${m.body.owner.domain} has a spending limit (${max.value} ${max.currency}): the agreement needs an "amount" clause {value, currency}`);
     if (!amount || typeof amount !== "object" || typeof amount.value !== "string" || typeof amount.currency !== "string")
       throw new Error("the amount clause must be {value: '123.45', currency: 'EUR'}");
     let within = false;
@@ -341,3 +353,4 @@ export class Wallet {
       throw new Error(`amount ${amount.value} ${amount.currency} exceeds the mandate of ${m.body.owner.domain} (${max.value} ${max.currency})`);
   }
 }
+

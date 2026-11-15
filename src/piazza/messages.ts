@@ -83,17 +83,49 @@ export function checkEnvelope(e: Envelope, audience: string, now = new Date()): 
 // ---------- content rules ----------
 
 const ALLOWED = /^[\p{L}\p{N} .,;:!?'"()\-–/%€$£+&#@*]*$/u;
-const LINK = /(https?:|www\.|\b[a-z0-9-]+\.(com|net|org|io|ai|it|de|fr|xyz|app|dev|co|me|info|biz|ly|gg)\b)/i;
-const AI_DIRECTED = /\b(ignore|disregard|forget)\b.{0,30}\b(previous|above|prior|instructions?|rules?)\b|\b(system prompt|you are (now )?an?|as an ai|assistant:|developer mode|jailbreak|act as|new instructions|tool call|call the tool|execute|run this)\b|\b(ignora|dimentica).{0,30}\b(istruzioni|regole)\b/i;
+/** Letters that look like nothing (Hangul fillers and similar): they hide words from the filters. */
+const INVISIBLE = /[ᅟᅠㅤﾠ⠀᠎​-‏⁠-⁤﻿]/u;
+/** Any web address: a scheme, "www.", any name.extension (also "name dot com"), not only a list of known extensions. */
+const LINK = /(https?:|www\.|\b[a-z0-9-]+\.[a-z]{2,24}\b|\b[a-z0-9-]+\s*[([]?\s*dot\s*[)\]]?\s*(com|net|org|io|ai|it|de|fr|es|eu|uk|us|xyz|app|dev|co|me|info|biz|shop|ly|gg)\b)/i;
+const AI_DIRECTED = new RegExp(
+  [
+    String.raw`\b(ignore|disregard|forget|set aside|override|overrule|bypass|drop)\b.{0,40}\b(previous|above|prior|earlier|instructions?|rules?|guidance|guidelines|prompt|context|policy|policies|orders?)\b`,
+    String.raw`\b(previous|prior|earlier|original|old)\s+(instructions?|guidance|guidelines|rules|prompt|orders?)\b`,
+    String.raw`\b(system prompt|you are (now )?an?|as an ai|assistant:|developer mode|jailbreak|act as|new instructions|tool call|call the tool|execute|run this)\b`,
+    String.raw`\byou (now |will now |must now |shall now )?(operate|act|function|serve|behave|work) as\b`,
+    String.raw`\b(from now on|before (replying|answering|responding)|pretend (to be|you are)|your (new |real |true )?(role|task|job|instructions?|orders?) (is|are)\b)`,
+    String.raw`\b(ignora|dimentica|trascura)\b.{0,40}\b(istruzioni|regole|indicazioni)\b`,
+  ].join("|"),
+  "i",
+);
 const SECRET_VALUE = /\b[A-Za-z0-9+/_=-]{24,}\b|\bIT\d{2}[A-Z]\d{10}[0-9A-Z]{12}\b/;
 const SECRET_WORD = /\b(api[_ -]?key|password|passwd|secret|token|seed phrase|private key)\b/i;
 const CONTACTISH = /[\w.+-]+@[\w-]+\.[\w.]+|\+?\d[\d ()-]{7,}\d/;
 
+/** Cyrillic and Greek letters that look like Latin ones, folded to Latin before the word filters. */
+const LOOKALIKE: Record<string, string> = {
+  а: "a", в: "b", е: "e", ё: "e", к: "k", м: "m", н: "h", о: "o", р: "p", с: "c", т: "t", у: "y", х: "x", і: "i", ї: "i", ј: "j", ѕ: "s", ԁ: "d", ԛ: "q", ԝ: "w", һ: "h", ү: "y",
+  А: "A", В: "B", Е: "E", К: "K", М: "M", Н: "H", О: "O", Р: "P", С: "C", Т: "T", У: "Y", Х: "X", І: "I", Ј: "J", Ѕ: "S",
+  α: "a", ο: "o", ρ: "p", ν: "v", ι: "i", κ: "k", τ: "t", υ: "u", χ: "x", Α: "A", Β: "B", Ε: "E", Ζ: "Z", Η: "H", Ι: "I", Κ: "K", Μ: "M", Ν: "N", Ο: "O", Ρ: "P", Τ: "T", Υ: "Y", Χ: "X",
+};
+const foldLookalikes = (s: string) => s.replace(/[Ͱ-ϿЀ-ԯ]/gu, (c) => LOOKALIKE[c] ?? c);
+
+/** A word that mixes Latin letters with Cyrillic or Greek ones is a disguise, not a language. */
+function mixedScriptWord(s: string): boolean {
+  return s.split(/[^\p{L}]+/u).some((w) => /\p{Script=Latin}/u.test(w) && /[\p{Script=Cyrillic}\p{Script=Greek}]/u.test(w));
+}
+
 /** Content rules for any free text written to the piazza (posts, questions to the Guide, feedback). */
 export function checkText(field: string, value: string, opts: { allowAiWords?: boolean; allowSecretWords?: boolean } = {}): string | null {
-  if (!ALLOWED.test(value)) return `${field} contains characters that are not allowed (only letters, numbers and basic punctuation)`;
-  if (LINK.test(value)) return `${field} contains a link or a web address: not allowed in the piazza`;
-  if (!opts.allowAiWords && AI_DIRECTED.test(value)) return `${field} contains text addressed to AI systems: not allowed`;
+  if (INVISIBLE.test(value)) return `${field} contains invisible characters: not allowed`;
+  // Wide, mathematical and other look-alike forms become plain letters first (NFKC), so they cannot slip past the word filters.
+  const plain = value.normalize("NFKC");
+  if (!ALLOWED.test(plain)) return `${field} contains characters that are not allowed (only letters, numbers and basic punctuation)`;
+  if (mixedScriptWord(plain)) return `${field} mixes alphabets inside a word (for example Cyrillic letters that look Latin): not allowed`;
+  const folded = foldLookalikes(plain);
+  value = plain;
+  if (LINK.test(folded)) return `${field} contains a link or a web address: not allowed in the piazza`;
+  if (!opts.allowAiWords && AI_DIRECTED.test(folded)) return `${field} contains text addressed to AI systems: not allowed`;
   if (SECRET_VALUE.test(value) || (!opts.allowSecretWords && SECRET_WORD.test(value)))
     return `${field} looks like it contains a key, password, code or bank number: never post secrets`;
   if (CONTACTISH.test(value)) return `${field} contains an email or phone number: contacts are exchanged only after both agents agree`;

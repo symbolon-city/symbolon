@@ -2,7 +2,7 @@
 // No tools, no thinking, short answers, low effort: the Guide only rephrases prepared knowledge.
 
 import Anthropic from "@anthropic-ai/sdk";
-import type { AskModel } from "./guide.js";
+import { GUIDE_MAX_OUTPUT_TOKENS, type AskModel } from "./guide.js";
 import { demoWriterPrompt, parseDemoPost, type DemoWriter } from "./demo.js";
 
 export const GUIDE_MODEL = "claude-haiku-5-5";
@@ -12,7 +12,7 @@ export function claudeAskModel(apiKey: string, opts: { model?: string; fetch?: t
   return async (system, question) => {
     const res = await client.messages.create({
       model: opts.model ?? GUIDE_MODEL,
-      max_tokens: 400,
+      max_tokens: GUIDE_MAX_OUTPUT_TOKENS,
       thinking: { type: "disabled" },
       output_config: { effort: "low" },
       system,
