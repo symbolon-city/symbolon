@@ -24,7 +24,8 @@ npm run anchor -- upgrade <file>   # a few hours later: fetch the Bitcoin attest
 | `keys.ts` | Ed25519 keys and signatures |
 | `merkle.ts` | Merkle tree, inclusion and consistency proofs (RFC 9162) |
 | `clauses.ts` | Salted clauses, clause root, selective disclosure |
-| `mandate.ts` | Owner-signed mandates with scope, amount limit and validity |
+| `mandate.ts` | Owner-signed mandates with scope, amount limit and validity; sub-mandates (chains that never give more than they received) |
+| `operator.ts` | Operator kit for automatic mode: one-time setup, a task mandate per request, cancel, emergency stop |
 | `record.ts` | Agreements (2+ agents) and single-agent actions, signed by the agents |
 | `register.ts` | Append-only log of fingerprints with signed tree heads |
 | `witness.ts` | Independent witnesses that refuse to countersign a rewritten history |
@@ -78,7 +79,28 @@ SYMBOLON_REGISTER_URL=http://127.0.0.1:8788 npm run mcp   # MCP server (stdio) f
 npm run owner -- mandate --agent <agent key> --scope "customer support" --max 500.00
 ```
 
-Tools: `symbolon_whoami`, `symbolon_my_mandate`, `symbolon_install_mandate`, `symbolon_check_counterparty`, `symbolon_seal_action`, `symbolon_propose_agreement`, `symbolon_accept_agreement`, `symbolon_confirm_agreement`, `symbolon_list_records`, `symbolon_create_proof`, `symbolon_verify_proof`.
+Tools: `symbolon_whoami`, `symbolon_my_mandate`, `symbolon_install_mandate`, `symbolon_check_counterparty`, `symbolon_delegate`, `symbolon_seal_action`, `symbolon_propose_agreement`, `symbolon_accept_agreement`, `symbolon_confirm_agreement`, `symbolon_list_records`, `symbolon_create_proof`, `symbolon_verify_proof`.
+
+## Automatic mode (operators)
+
+People should not have to sign anything. Whoever runs agents for people (an assistant app, a platform, a developer: the **operator**) answers for them, and joins once:
+
+```ts
+import { setupOperator, Operator } from "./src/index.js";
+const setup = setupOperator({ domain: "assistant.example", capPerAgreement: { value: "500.00", currency: "EUR" } });
+// publish setup.ownerFile at https://assistant.example/.well-known/symbolon.json (a GitHub Pages site works),
+// keep setup.ownerSecretHex offline, store setup.issuerSecretHex as a server secret.
+const operator = new Operator({ issuerSecretHex: setup.issuerSecretHex, issuingMandate: setup.issuingMandate,
+  capPerTask: { value: "1000.00", currency: "EUR" }, confirmAbove: { value: "300.00", currency: "EUR" } });
+// each request of a person:
+const task = operator.newTask({ instruction: "translate this, at most 50 euros", principalId: "customer-8812",
+  total: { value: "50.00", currency: "EUR" } });
+// -> task.mandate for the agent's wallet (installMandate), task.agentSecretHex for its key, task.salt to keep.
+```
+
+The chain is owner key → issuing mandate (server key, capped) → task mandate (the person's limits, short validity, salted fingerprints of the instruction and of the customer: nothing personal in clear). Counterparties see the operator, verified at its domain, and the task limits. Limits come from the operator's fixed rules, never only from the AI's reading of a request; above `confirmAbove` the person confirms once. `operator.cancelTask(...)` withdraws one task; `revokeIssuing(...)` (owner key) stops every task at once. The same sub-mandates let any agent hand part of a job to another agent (`symbolon_delegate`), never with more than it received; chains have at most 4 links.
+
+Prototype note: sub-mandates are accepted next to the current formats on the test services; the final format comes with the launch register.
 
 ## Demonstration city
 

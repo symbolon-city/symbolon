@@ -12,7 +12,11 @@ export interface CounterpartyCheck {
   level: "unverified" | "domain";
   scope: string;
   maxAmount?: Amount;
+  /** For a task or sub-mandate: the limit for everything done under it. */
+  total?: Amount;
   validUntil: string;
+  /** How the agent holds its mandate: directly from the owner, or through a chain (operator task, subcontracting). */
+  via: { links: number; task: boolean };
   /** Present when the mandate was revoked: from when (register time and position), by whom, why. */
   revoked?: { at: string; registerIndex: number; by: string; target: string; reason?: string };
   /** "checked" when revocations were looked up, "not checked" otherwise (e.g. register unreachable). */
@@ -56,7 +60,9 @@ export async function checkMandate(
     level,
     scope: m.body.scope,
     maxAmount: m.body.maxAmount,
+    ...(m.body.type === "symbolon/submandate" && m.body.total ? { total: m.body.total } : {}),
     validUntil: m.body.notAfter,
+    via: { links: (m.chain?.length ?? 0) + 1, task: m.body.type === "symbolon/submandate" && !!m.body.task },
     ...(revoked ? { revoked } : {}),
     revocations: status,
     problems,

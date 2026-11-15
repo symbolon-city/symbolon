@@ -7,7 +7,7 @@ import type { Json } from "../canonical.js";
 import { clauseNamesProblem, clausesObject, commitClauses, disclose, verifyOpened, type OpenedClauses } from "../clauses.js";
 import { generateKeyPair, keyPairFromSecret, verifyValue, type KeyPair, type PublicKey } from "../keys.js";
 import { toHex } from "../bytes.js";
-import { amountLeq, looksLikeAmount, mandateId, mandateProblem, verifyMandateSignature, withinValidity, type Amount, type Mandate } from "../mandate.js";
+import { amountLeq, createSubMandate, looksLikeAmount, spendingLimit, mandateId, mandateProblem, verifyMandateSignature, withinValidity, type Amount, type Mandate } from "../mandate.js";
 import { buildProof, verifyProof, type ProofBundle, type Report } from "../proof.js";
 import { createRecord, entryHash, isFullySigned, recordProblem, signRecord, type SignedRecord } from "../record.js";
 import type { Receipt } from "../register.js";
@@ -149,6 +149,28 @@ export class Wallet {
     if (hit) throw new Error(`${whose} mandate was revoked on ${hit.time}${hit.revocation.body.reason ? ` (${hit.revocation.body.reason})` : ""}`);
   }
 
+  /**
+   * Gives part of this agent's mandate to another agent (a sub-mandate: subcontracting, or an operator's
+   * task agent handing on a piece of work). Never more than this agent has: limits and dates are capped
+   * by every mandate above, and the owner at the top answers for the whole chain.
+   */
+  async delegate(p: { agent: PublicKey; scope: string; maxAmount?: Amount; total?: Amount; hours: number; task?: { instruction: string; principal: string } }): Promise<Mandate> {
+    const mine = this.myMandate();
+    await this.refuseIfRevoked(mine, "my");
+    if (p.agent === this.key.publicKey) throw new Error("cannot give a sub-mandate to yourself");
+    if (!(p.hours > 0)) throw new Error("hours must be a positive number");
+    const now = this.now().getTime();
+    const notBefore = new Date(Math.max(now - 60_000, Date.parse(mine.body.notBefore))).toISOString();
+    const notAfter = new Date(Math.min(now + p.hours * 3_600_000, Date.parse(mine.body.notAfter))).toISOString();
+    const maxAmount = p.maxAmount ?? mine.body.maxAmount;
+    const mineTotal = mine.body.type === "symbolon/submandate" ? mine.body.total : undefined;
+    const total = p.total ?? mineTotal;
+    return createSubMandate(this.key, mine, {
+      agent: p.agent, scope: p.scope, notBefore, notAfter, charter: mine.body.charter,
+      ...(maxAmount ? { maxAmount } : {}), ...(total ? { total } : {}), ...(p.task ? { task: p.task } : {}),
+    });
+  }
+
   /** Seals what this agent was asked and what it did. */
   async sealAction(p: { instruction: string; action: string; details?: Json }): Promise<{ entry: string; index: number; sealedAt: string }> {
     const mandate = this.myMandate();
@@ -204,6 +226,7 @@ export class Wallet {
     if (problem) throw new Error(problem);
     this.checkAmount(p.clauses, mine);
     this.checkAmount(p.clauses, p.counterparty);
+    this.checkTotal(p.clauses, mine);
     const opened = commitClauses(Object.entries(p.clauses).map(([name, value]) => ({ name, value })));
     const record = signRecord(
       createRecord({
@@ -263,6 +286,7 @@ export class Wallet {
     const clauses = clausesObject(opened);
     this.checkAmount(clauses, mine);
     for (const m of theirMandates) this.checkAmount(clauses, m);
+    this.checkTotal(clauses, mine);
 
     const signed = signRecord(record, this.key);
     const entry = entryHash(signed);
@@ -326,6 +350,35 @@ export class Wallet {
   }
 
   /**
+   * The total of a sub-mandate ("at most 50 EUR for this task"): what this wallet already agreed under it,
+   * sealed or still offered, plus this agreement, must stay within it.
+   */
+  private checkTotal(clauses: Record<string, Json>, mine: Mandate) {
+    const total = mine.body.type === "symbolon/submandate" ? mine.body.total : undefined;
+    if (!total) return;
+    const id = mandateId(mine);
+    const amountOf = (c: Record<string, Json>): Amount | null => {
+      const a = (Object.prototype.hasOwnProperty.call(c, "amount") ? c["amount"] : null) as unknown as Amount | null;
+      return a && typeof a === "object" && typeof a.value === "string" ? a : null;
+    };
+    const scale = (v: string) => {
+      const [i, f = ""] = v.split(".");
+      return BigInt(i) * 1_000_000n + BigInt(f.padEnd(6, "0").slice(0, 6));
+    };
+    let used = 0n;
+    for (const r of [...Object.values(this.state.records), ...Object.values(this.state.offers)]) {
+      if (r.kind !== "agreement" || !r.record.body.parties.some((p) => p.agent === this.key.publicKey && p.mandate === id)) continue;
+      const a = amountOf(clausesObject(r.opened));
+      if (a && a.currency === total.currency) used += scale(a.value);
+    }
+    const now = amountOf(clauses);
+    if (!now) return;
+    if (now.currency !== total.currency) throw new Error(`this task's total is in ${total.currency}, the amount is in ${now.currency}`);
+    if (used + scale(now.value) > scale(total.value))
+      throw new Error(`this task allows at most ${total.value} ${total.currency} in total, and ${(Number(used) / 1e6).toFixed(2)} are already agreed`);
+  }
+
+  /**
    * The mandate limit is checked on the "amount" clause, so under a mandate with a limit the agreement must
    * state its price there, and nowhere else: a 999,999 EUR "price" next to (or instead of) a small "amount"
    * would dodge the limit. Strings like "999999 EUR" inside free text cannot be told apart from prose: the
@@ -334,7 +387,7 @@ export class Wallet {
   private checkAmount(clauses: Record<string, Json>, m: Mandate) {
     const has = Object.prototype.hasOwnProperty.call(clauses, "amount");
     const amount = (has ? clauses["amount"] : undefined) as unknown as Amount | undefined;
-    const max = m.body.maxAmount;
+    const max = spendingLimit(m);
     if (!max) return;
     for (const [name, value] of Object.entries(clauses))
       if (name !== "amount" && looksLikeAmount(value))

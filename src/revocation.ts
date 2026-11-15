@@ -6,12 +6,14 @@
 //
 // Who may revoke what (checked by whoever applies the revocation, never trusted from the register):
 // - the mandate's owner key, or any key published at the owner's domain: anything about that owner's mandates;
-// - the agent named in a mandate: that mandate ("I give it up") and its own key ("my key was stolen").
+// - the agent named in a mandate: that mandate ("I give it up") and its own key ("my key was stolen");
+// - for a sub-mandate, also its issuer (the agent that gave it): that sub-mandate and that agent key.
+// A revocation of any link of a chain stops every sub-mandate below it.
 // A thief holding a stolen key can revoke it too, but cannot undo a revocation: there is no "unrevoke".
 
 import { digest } from "./hash.js";
 import { signValue, verifyValue, type KeyPair, type PublicKey } from "./keys.js";
-import { mandateId, ownerDomainProblem, type Mandate } from "./mandate.js";
+import { linksOf, mandateId, ownerDomainProblem, type Mandate } from "./mandate.js";
 
 const HEX64 = /^[0-9a-f]{64}$/;
 const KEY = /^ed25519:[0-9a-f]{64}$/;
@@ -78,9 +80,10 @@ export function revocationSubject(r: Revocation): string {
   return r.body.target.kind === "mandate" ? r.body.target.id : r.body.target.key;
 }
 
-/** The subjects to look up for a mandate: its id, its agent key, its owner key. */
+/** The subjects to look up for a mandate: the id and agent key of every link of its chain, and the owner key. */
 export function subjectsOf(m: Mandate): string[] {
-  return [mandateId(m), m.body.agent, m.body.owner.key];
+  const links = linksOf(m);
+  return [...new Set([...links.map(mandateId), ...links.map((l) => l.body.agent), m.body.owner.key])];
 }
 
 /**
@@ -89,7 +92,7 @@ export function subjectsOf(m: Mandate): string[] {
  * revocations written by unrelated keys cannot crowd out the real one.
  */
 export function signersOf(m: Mandate, ownerKeys: PublicKey[] | null = null): PublicKey[] {
-  return [...new Set([m.body.owner.key, m.body.agent, ...(ownerKeys ?? [])])];
+  return [...new Set([m.body.owner.key, ...linksOf(m).map((l) => l.body.agent), ...(ownerKeys ?? [])])];
 }
 
 /** Structural and signature check. Returns a problem, or null if well formed and signed by `by`. */
@@ -126,15 +129,14 @@ export function revokes(r: Revocation, m: Mandate, ownerKeys: PublicKey[] | null
   const { by, target, ownerDomain } = r.body;
   const owner = m.body.owner;
   const byOwner = by === owner.key || (!!ownerKeys?.includes(by) && (ownerDomain ?? owner.domain) === owner.domain);
-  const byAgent = by === m.body.agent;
-  switch (target.kind) {
-    case "mandate":
-      return target.id === mandateId(m) && (byOwner || byAgent);
-    case "agent":
-      return target.key === m.body.agent && (byOwner || (byAgent && by === target.key));
-    case "owner-key":
-      return target.key === owner.key && byOwner;
-  }
+  if (target.kind === "owner-key") return target.key === owner.key && byOwner;
+  // Any link revoked stops the whole chain below it.
+  return linksOf(m).some((l) => {
+    const byAgent = by === l.body.agent;
+    const byIssuer = l.body.type === "symbolon/submandate" && by === l.body.issuer;
+    if (target.kind === "mandate") return target.id === mandateId(l) && (byOwner || byAgent || byIssuer);
+    return target.key === l.body.agent && (byOwner || (byAgent && by === target.key) || byIssuer);
+  });
 }
 
 /** The revocations, among those found, that apply to the mandate (earliest first). */

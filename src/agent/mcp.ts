@@ -5,7 +5,7 @@
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { z } from "zod";
 import type { Json } from "../canonical.js";
-import type { Mandate } from "../mandate.js";
+import type { Amount, Mandate } from "../mandate.js";
 import type { ProofBundle } from "../proof.js";
 import type { Confirmation, Offer, Wallet } from "./wallet.js";
 import { CATEGORIES, KINDS, REPLIES, type Action } from "../piazza/messages.js";
@@ -75,6 +75,27 @@ export function buildMcpServer(wallet: Wallet, opts: { piazzaUrl?: string; fetch
       inputSchema: { mandate: jsonObject },
     },
     ({ mandate }) => run(() => wallet.checkCounterparty(mandate as unknown as Mandate)),
+  );
+
+  server.registerTool(
+    "symbolon_delegate",
+    {
+      title: "Give a sub-mandate",
+      description:
+        "Gives part of this agent's mandate to another agent (for example to subcontract a piece of work). The sub-mandate can never allow more than this agent's own " +
+        "mandate (amount per agreement, total, dates), and this agent's owner answers for it. Returns the sub-mandate to give to that agent. Do it only if your owner's instructions allow it.",
+      inputSchema: {
+        agent: z.string().regex(/^ed25519:[0-9a-f]{64}$/).describe("The other agent's public key"),
+        scope: z.string().max(500).describe("What the other agent may do, in plain words"),
+        max_amount: jsonObject.optional().describe("Limit per agreement, e.g. {value: '50.00', currency: 'EUR'}"),
+        total: jsonObject.optional().describe("Limit for everything under this sub-mandate"),
+        hours: z.number().positive().max(24 * 90).describe("How long it lasts, in hours"),
+      },
+    },
+    ({ agent, scope, max_amount, total, hours }) =>
+      run(() =>
+        wallet.delegate({ agent, scope, hours, ...(max_amount ? { maxAmount: max_amount as unknown as Amount } : {}), ...(total ? { total: total as unknown as Amount } : {}) }),
+      ),
   );
 
   server.registerTool(

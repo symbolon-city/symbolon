@@ -5,7 +5,7 @@ import { verifyAnchor, type Anchor, type AnchorStatus, type BlockProvider } from
 import { fromHex } from "./bytes.js";
 import { clauseNamesProblem, verifyDisclosure, type Disclosure } from "./clauses.js";
 import { verifyValue, type PublicKey } from "./keys.js";
-import { amountLeq, looksLikeAmount, mandateId, mandateProblem, verifyMandateSignature, withinValidity, type Amount, type Mandate } from "./mandate.js";
+import { amountLeq, looksLikeAmount, mandateId, mandateProblem, spendingLimit, verifyMandateSignature, withinValidity, type Amount, type Mandate } from "./mandate.js";
 import { verifyConsistency, verifyInclusion } from "./merkle.js";
 import { entryHash, recordProblem, type SignedRecord } from "./record.js";
 import { entryLeaf, verifyHeadSignature, type Receipt } from "./register.js";
@@ -217,13 +217,14 @@ export async function verifyProof(b: ProofBundle, opts: VerifyOptions): Promise<
   // 6. Amount within each mandate's limit. If a mandate has a limit and the amount is not shown,
   // the limit could not be checked: that is a gap, never a pass.
   const amount = disclosed["amount"] as Amount | undefined;
-  const limited = rec.body.parties.some((p) => mandateOf(p.mandate)?.body.maxAmount);
+  const limited = rec.body.parties.some((p) => { const m = mandateOf(p.mandate); return !!m && !!spendingLimit(m); });
   if (limited)
     for (const [name, value] of Object.entries(disclosed))
       if (name !== "amount" && looksLikeAmount(value))
         add(`clause "${name}" holds no hidden price`, false, "a mandate has a spending limit: the price may appear only in the \"amount\" clause");
   for (const p of rec.body.parties) {
-    const max = mandateOf(p.mandate)?.body.maxAmount;
+    const lm = mandateOf(p.mandate);
+    const max = lm ? spendingLimit(lm) : undefined;
     if (!max) continue;
     if (amount === undefined) {
       gaps.push(`amount not disclosed: the limit of the mandate of agent ${short(p.agent)} (${max.value} ${max.currency}) could not be checked`);

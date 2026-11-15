@@ -12,3 +12,4 @@ export * from "./ots.js";
 export { treeRoot, inclusionProof, consistencyProof, verifyInclusion, verifyConsistency } from "./merkle.js";
 export * from "./counterparty.js";
 export * from "./revocation.js";
+export * from "./operator.js";

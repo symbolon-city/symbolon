@@ -16,6 +16,7 @@ import { toHex, utf8 } from "../bytes.js";
 import { sha256Hex } from "../hash.js";
 import { keyPairFromSecret, type KeyPair } from "../keys.js";
 import { createMandate } from "../mandate.js";
+import { Operator } from "../operator.js";
 import { handlePiazza, type PiazzaDeps } from "./app.js";
 import { checkPost, signEnvelope, type Category, type Kind, type PostContent } from "./messages.js";
 
@@ -174,6 +175,9 @@ export function parseDemoPost(answer: string): { title: string; text: string } |
 // published like any owner's) makes an agreement with one of the piazza's demo agents, through the
 // same wallets real agents use. The resulting proof file is published, so anyone can verify it
 // (for example with the symbolon_verify_proof tool of the visitors' door).
+// Since 15/11/2026 the partner works in "automatic mode": it is a demo assistant that receives a request
+// from an ordinary (fictional) customer and turns it, with the operator kit, into a task mandate for its
+// buying agent; the proof shows the whole chain (owner -> issuing mandate -> task).
 
 
 /** The second demonstration owner's key, derived from the piazza's demo owner secret. */
@@ -243,7 +247,32 @@ export async function runDemoAgreement(o: DemoAgreementOptions): Promise<{ entry
     return wallet;
   };
   const seller = await open(toHex(demoAgentKey(o.ownerSecret, deal.seller).secretKey), owner, domain, deal.seller, "5000.00");
-  const buyer = await open(sha256Hex(utf8(`symbolon-demo-partner-agent:${deal.buyer}:${o.ownerSecret}`)), partner, o.partnerDomain, deal.buyer, "2000.00");
+  // The partner as an operator: issuing mandate for its server key, then one task mandate for today's request.
+  const issuer = keyPairFromSecret(sha256Hex(utf8(`symbolon-demo-partner-issuer:${o.ownerSecret}`)));
+  const issuingMandate = createMandate(partner, {
+    ownerDomain: o.partnerDomain,
+    agent: issuer.publicKey,
+    scope: "demonstration assistant: issues task mandates for its fictional customers",
+    maxAmount: { value: "2000.00", currency: "EUR" },
+    notBefore: new Date(now.getTime() - 60_000).toISOString(),
+    notAfter: new Date(now.getTime() + 7 * 86_400_000).toISOString(),
+    charter: "accord-charter/0.1",
+  });
+  const operator = new Operator({ issuerSecretHex: toHex(issuer.secretKey), issuingMandate, capPerTask: { value: "2000.00", currency: "EUR" }, now: () => now });
+  const buyerSecret = sha256Hex(utf8(`symbolon-demo-partner-agent:${deal.buyer}:${o.ownerSecret}`));
+  const task = operator.newTask({
+    instruction: `Find someone for this, at most ${hi} euros: ${deal.service}`,
+    principalId: `demo-customer-${dayIndex}`,
+    scope: "demonstration task for a fictional customer of the demo assistant",
+    total: { value: `${hi}.00`, currency: "EUR" },
+    hours: 2,
+    agentKey: keyPairFromSecret(buyerSecret).publicKey,
+  });
+  if ("needsConfirmation" in task) throw new Error("demo task unexpectedly needs a confirmation");
+  const buyerStorage = new MemoryWalletStorage();
+  await buyerStorage.save({ v: 1, agentSecret: buyerSecret, records: {}, offers: {} });
+  const buyer = await Wallet.open(buyerStorage, o.register, { ownerResolver, now: () => now });
+  await buyer.installMandate(task.mandate);
 
   const clauses: Record<string, Json> = {
     service: deal.service,
