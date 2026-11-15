@@ -77,8 +77,13 @@ test("two agents agree through MCP, and a third party verifies the proof", async
   const proof = await buyer.call("symbolon_create_proof", { entry: accepted.entry, reveal: ["delivery"] });
   assert.equal(proof.disclosures.length, 1);
   const report = await seller.call("symbolon_verify_proof", { proof });
-  assert.equal(report.valid, true, JSON.stringify(report.checks.filter((c: { ok: boolean }) => !c.ok)));
+  // Only the delivery date is shown, but the buyer's mandate has a limit: nothing failed, yet it is not complete.
+  assert.deepEqual(report.checks.filter((c: { ok: boolean }) => !c.ok), []);
+  assert.equal(report.verdict, "incomplete");
   assert.deepEqual(report.disclosed, { delivery: "2026-12-10" });
+  const full = await buyer.call("symbolon_create_proof", { entry: accepted.entry, reveal: ["delivery", "amount"] });
+  const fullReport = await seller.call("symbolon_verify_proof", { proof: full });
+  assert.equal(fullReport.valid, true, JSON.stringify([fullReport.gaps, fullReport.checks.filter((c: { ok: boolean }) => !c.ok)]));
 });
 
 test("an offer above the buyer's limit is refused by the buyer's own wallet", async () => {

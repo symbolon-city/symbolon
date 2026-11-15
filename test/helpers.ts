@@ -73,6 +73,8 @@ export async function scenario() {
     trustedWitnesses: witnesses.map((w) => w.publicKey),
     minWitnesses: 2,
     ownerResolver: resolver,
+    // No revocations exist in this scenario; checking them is part of a complete verification.
+    revocations: async () => [],
   };
 
   const proof = (disclosures: ReturnType<typeof import("../src/index.js").disclose>[] = []) =>

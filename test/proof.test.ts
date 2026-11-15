@@ -19,13 +19,25 @@ import { scenario } from "./helpers.js";
 
 const failed = (r: { checks: { name: string; ok: boolean }[] }) => r.checks.filter((c) => !c.ok).map((c) => c.name);
 
-test("a correctly sealed agreement verifies, revealing only the delivery date", async () => {
+test("a correctly sealed agreement verifies, revealing only the delivery date and the amount", async () => {
+  const s = await scenario();
+  const r = await verifyProof(s.proof([disclose(s.opened, "delivery"), disclose(s.opened, "amount")]), s.verifyOpts);
+  assert.deepEqual(failed(r), []);
+  assert.deepEqual(r.gaps, []);
+  assert.ok(r.valid);
+  assert.equal(r.verdict, "valid");
+  assert.equal(r.disclosed.delivery, "2026-12-10");
+  assert.equal(Object.values(r.levels).every((l) => l === "domain"), true);
+});
+
+test("hiding the amount when a mandate has a limit gives 'incomplete', never 'valid' (B2)", async () => {
   const s = await scenario();
   const r = await verifyProof(s.proof([disclose(s.opened, "delivery")]), s.verifyOpts);
   assert.deepEqual(failed(r), []);
-  assert.ok(r.valid);
-  assert.deepEqual(r.disclosed, { delivery: "2026-12-10" });
-  assert.equal(Object.values(r.levels).every((l) => l === "domain"), true);
+  assert.equal(r.valid, false);
+  assert.equal(r.verdict, "incomplete");
+  assert.equal(r.gaps.length, 1);
+  assert.match(r.gaps[0], /amount not disclosed/);
 });
 
 test("the register receives nothing readable", async () => {

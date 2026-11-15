@@ -37,6 +37,7 @@ test("seal-lite: a server-side seal verifies with the normal verifier, revealing
   const report = await verifyProof(proof, {
     trustedLogs: [deps.register.publicKey],
     ownerResolver: staticOwnerResolver({ "chat.example": [owner.publicKey] }),
+    revocations: async () => [],
   });
   assert.ok(report.valid, JSON.stringify(report.checks.filter((c) => !c.ok)));
 });

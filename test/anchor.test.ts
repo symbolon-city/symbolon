@@ -5,6 +5,7 @@ import { fromBase64, fromHex, toBase64, toHex } from "../src/bytes.js";
 import {
   allAttestations,
   applyOp,
+  disclose,
   fromOtsFile,
   headDigest,
   newTimestamp,
@@ -106,12 +107,14 @@ test("a proof can carry a Bitcoin anchor of a later tree head", async () => {
   const { ts, blocks } = confirmed(headDigest(later), 900_002);
   const anchor = { anchor: { head: later, ots: toBase64(toOtsFile(ts)) }, consistency: await s.register.consistency(s.receipt.head.size, later.size) };
 
-  const ok = await verifyProof({ ...s.proof(), anchor }, { ...s.verifyOpts, bitcoin: blocks });
+  const amount = [disclose(s.opened, "amount")];
+  const ok = await verifyProof({ ...s.proof(amount), anchor }, { ...s.verifyOpts, bitcoin: blocks });
   assert.ok(ok.valid, JSON.stringify(ok.checks.filter((c) => !c.ok)));
   assert.equal(ok.bitcoin.status, "confirmed");
 
-  const notChecked = await verifyProof({ ...s.proof(), anchor }, s.verifyOpts);
+  const notChecked = await verifyProof({ ...s.proof(amount), anchor }, s.verifyOpts);
   assert.equal(notChecked.bitcoin.status, "not checked");
+  assert.equal(notChecked.verdict, "incomplete"); // an anchor nobody checked is not a pass (B8)
 
   const forged = { ...anchor, consistency: anchor.consistency.map(() => "00".repeat(32)) };
   const bad = await verifyProof({ ...s.proof(), anchor: forged }, { ...s.verifyOpts, bitcoin: blocks });

@@ -71,7 +71,7 @@ try {
   console.log("5. Fascicolo di prova creato");
 
   const check = await call("symbolon_verify_proof", { proof });
-  console.log("6. Verifica del fascicolo:", check.valid, "\n" + check.checks.map((c: { ok: boolean; name: string }) => `   ${c.ok ? "ok " : "NO "} ${c.name}`).join("\n"));
+  console.log("6. Verifica del fascicolo:", check.verdict ?? check.valid, ...(check.gaps?.length ? ["\n   lacune: " + check.gaps.join("; ")] : []), "\n" + check.checks.map((c: { ok: boolean; name: string }) => `   ${c.ok ? "ok " : "NO "} ${c.name}`).join("\n"));
 } finally {
   await client.close().catch(() => {});
   rmSync(home, { recursive: true, force: true });

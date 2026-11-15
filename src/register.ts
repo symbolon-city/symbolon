@@ -122,11 +122,15 @@ export class Register {
     throw new Error("register busy, try again");
   }
 
-  /** Receipt for an existing entry, against the latest head. */
+  /**
+   * Receipt for an existing entry, against the head signed when it was added (size index+1), so the
+   * receipt's time is the sealing time. Later heads only say "sealed no later than"; a Bitcoin anchor
+   * or a consistency proof links this head to any later one.
+   */
   async receipt(entry: string, index?: number): Promise<Receipt> {
     const i = index ?? (await this.store.indexOf(entry));
     if (i === null) throw new Error("entry not found");
-    const head = await this.latestHead();
+    const head = (await this.store.head(i + 1)) ?? (await this.latestHead());
     if (!head) throw new Error("empty register");
     return { entry, index: i, head, path: await this.inclusion(i, head.size) };
   }

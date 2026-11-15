@@ -33,10 +33,23 @@ function clauseLeaf(c: Clause & { salt: string }): Uint8Array {
   return leafHash(utf8(canonical({ n: c.name, s: c.salt, v: c.value })));
 }
 
+/** Names that would clash with JavaScript object internals when clauses are read into an object. */
+const RESERVED = new Set(["__proto__", "constructor", "prototype"]);
+
+/** Why a list of clause names is not acceptable (empty, not text, reserved, repeated), or null. */
+export function clauseNamesProblem(names: unknown[]): string | null {
+  if (names.length === 0) return "an agreement needs at least one clause";
+  for (const n of names) {
+    if (typeof n !== "string" || n.length === 0 || n.length > 100) return "a clause name must be a text of 1 to 100 characters";
+    if (RESERVED.has(n)) return `"${n}" cannot be used as a clause name`;
+  }
+  if (new Set(names).size !== names.length) return "clause names must be unique";
+  return null;
+}
+
 export function commitClauses(clauses: Clause[]): OpenedClauses {
-  if (clauses.length === 0) throw new Error("an agreement needs at least one clause");
-  const names = new Set(clauses.map((c) => c.name));
-  if (names.size !== clauses.length) throw new Error("clause names must be unique");
+  const problem = clauseNamesProblem(clauses.map((c) => c.name));
+  if (problem) throw new Error(problem);
   const salted = clauses.map((c) => ({ ...c, salt: toHex(randomBytes(32)) }));
   return { root: toHex(treeRoot(salted.map(clauseLeaf))), count: salted.length, clauses: salted };
 }
@@ -57,9 +70,17 @@ export function verifyDisclosure(d: Disclosure, root: string, count: number): bo
   }
 }
 
-/** Checks that a full set of opened clauses really produces the stated root. */
+/** Reads opened clauses into an object without prototype tricks. Call only after verifyOpened. */
+export function clausesObject(opened: OpenedClauses): Record<string, Json> {
+  const out = Object.create(null) as Record<string, Json>;
+  for (const c of opened.clauses) out[c.name] = c.value;
+  return out;
+}
+
+/** Checks that a full set of opened clauses really produces the stated root, with unique, allowed names. */
 export function verifyOpened(opened: OpenedClauses): boolean {
   try {
+    if (!Array.isArray(opened.clauses) || clauseNamesProblem(opened.clauses.map((c) => c.name))) return false;
     return opened.clauses.length === opened.count && toHex(treeRoot(opened.clauses.map(clauseLeaf))) === opened.root;
   } catch {
     return false;

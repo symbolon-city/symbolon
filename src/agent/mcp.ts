@@ -97,15 +97,18 @@ export function buildMcpServer(wallet: Wallet, opts: { piazzaUrl?: string; fetch
     {
       title: "Propose an agreement",
       description:
-        "Creates and signs an agreement with another agent. Clauses are name → value pairs; an 'amount' clause must be {value: '123.45', currency: 'EUR'} and is checked against both mandates. " +
+        "Checks the counterparty (mandate, owner, revocations), then creates and signs an agreement with it. Clauses are name → value pairs; an 'amount' clause must be {value: '123.45', currency: 'EUR'} and is checked against both mandates. " +
         "Returns an offer to send to the counterparty through your usual channel.",
       inputSchema: {
         counterparty_mandate: jsonObject.describe("The counterparty's mandate (from its symbolon_my_mandate)"),
         clauses: jsonObject.describe("The terms, e.g. {object: '...', amount: {value: '4200.00', currency: 'EUR'}, delivery: '2026-12-10'}"),
+        allow_unverified_owner: z.boolean().optional().describe("Default false. True only if your owner explicitly accepts a counterparty whose owner key is not published at its domain (anyone can write any domain in a mandate)"),
       },
     },
-    ({ counterparty_mandate, clauses }) =>
-      run(() => wallet.propose({ counterparty: counterparty_mandate as unknown as Mandate, clauses: clauses as Record<string, Json> })),
+    ({ counterparty_mandate, clauses, allow_unverified_owner }) =>
+      run(() =>
+        wallet.propose({ counterparty: counterparty_mandate as unknown as Mandate, clauses: clauses as Record<string, Json>, allowUnverifiedOwner: allow_unverified_owner }),
+      ),
   );
 
   server.registerTool(
@@ -113,11 +116,11 @@ export function buildMcpServer(wallet: Wallet, opts: { piazzaUrl?: string; fetch
     {
       title: "Accept an agreement",
       description:
-        "Checks an offer received from another agent (clauses, signature, mandates, amount limits), signs it and seals it in the register. " +
-        "Returns a confirmation to send back to the proposer. Accept only offers your owner would want.",
-      inputSchema: { offer: jsonObject },
+        "Checks an offer received from another agent (clauses, signatures, mandates, owners, revocations, amount limits) and only then signs it and seals it in the register. " +
+        "Refuses if any check fails. Returns a confirmation to send back to the proposer. Accept only offers your owner would want.",
+      inputSchema: { offer: jsonObject, allow_unverified_owner: z.boolean().optional().describe("Default false. True only if your owner explicitly accepts a counterparty whose owner key is not published at its domain (anyone can write any domain in a mandate)"), },
     },
-    ({ offer }) => run(() => wallet.accept(offer as unknown as Offer)),
+    ({ offer, allow_unverified_owner }) => run(() => wallet.accept(offer as unknown as Offer, { allowUnverifiedOwner: allow_unverified_owner })),
   );
 
   server.registerTool(

@@ -4,12 +4,12 @@
 
 import type { BlockProvider } from "../anchor.js";
 import type { Json } from "../canonical.js";
-import { commitClauses, disclose, verifyOpened, type OpenedClauses } from "../clauses.js";
+import { clauseNamesProblem, clausesObject, commitClauses, disclose, verifyOpened, type OpenedClauses } from "../clauses.js";
 import { generateKeyPair, keyPairFromSecret, verifyValue, type KeyPair, type PublicKey } from "../keys.js";
 import { toHex } from "../bytes.js";
-import { amountLeq, mandateId, verifyMandateSignature, withinValidity, type Amount, type Mandate } from "../mandate.js";
+import { amountLeq, mandateId, mandateProblem, verifyMandateSignature, withinValidity, type Amount, type Mandate } from "../mandate.js";
 import { buildProof, verifyProof, type ProofBundle, type Report } from "../proof.js";
-import { createRecord, entryHash, isFullySigned, signRecord, type SignedRecord } from "../record.js";
+import { createRecord, entryHash, isFullySigned, recordProblem, signRecord, type SignedRecord } from "../record.js";
 import type { Receipt } from "../register.js";
 import type { OwnerResolver } from "../wellknown.js";
 import type { RegisterClient } from "./client.js";
@@ -177,15 +177,33 @@ export class Wallet {
     return { entry, index: receipt.index, sealedAt: receipt.head.time };
   }
 
+  /**
+   * Refuses a counterparty whose check is not clean: bad signature, expired, revoked, revocations
+   * unreachable, or an owner key not published at the owner's domain. The last one alone can be
+   * waived with allowUnverifiedOwner (the owner must say so: anyone can write any domain in a mandate).
+   */
+  private async requireCounterparty(m: Mandate, allowUnverifiedOwner = false): Promise<CounterpartyCheck> {
+    if (mandateProblem(m)) throw new Error(`the counterparty's mandate is malformed: ${mandateProblem(m)}`);
+    const check = await this.checkCounterparty(m);
+    if (check.revoked) throw new Error(`the counterparty's mandate was revoked on ${check.revoked.at}`);
+    const ownerOnly = (x: string) => x.startsWith("owner key not published by");
+    const blocking = check.problems.filter((x) => !(allowUnverifiedOwner && ownerOnly(x)));
+    if (!allowUnverifiedOwner && check.level !== "domain" && !blocking.some(ownerOnly))
+      blocking.push(`owner ${check.owner} not verified (no owner lookup configured)`);
+    if (blocking.length) throw new Error(`counterparty not accepted: ${blocking.join("; ")}`);
+    return check;
+  }
+
   /** Prepares and signs an agreement; the result goes to the counterparty. */
-  async propose(p: { counterparty: Mandate; clauses: Record<string, Json> }): Promise<Offer> {
+  async propose(p: { counterparty: Mandate; clauses: Record<string, Json>; allowUnverifiedOwner?: boolean }): Promise<Offer> {
     const mine = this.myMandate();
-    if (!verifyMandateSignature(p.counterparty)) throw new Error("counterparty mandate signature is invalid");
-    if (!withinValidity(p.counterparty, this.now().toISOString())) throw new Error("counterparty mandate is not valid now");
-    if (p.counterparty.body.agent === this.key.publicKey) throw new Error("cannot make an agreement with yourself");
+    if (p.counterparty?.body?.agent === this.key.publicKey) throw new Error("cannot make an agreement with yourself");
+    await this.requireCounterparty(p.counterparty, p.allowUnverifiedOwner);
     await this.refuseIfRevoked(mine, "my");
-    await this.refuseIfRevoked(p.counterparty, "the counterparty's");
+    const problem = clauseNamesProblem(Object.keys(p.clauses));
+    if (problem) throw new Error(problem);
     this.checkAmount(p.clauses, mine);
+    this.checkAmount(p.clauses, p.counterparty);
     const opened = commitClauses(Object.entries(p.clauses).map(([name, value]) => ({ name, value })));
     const record = signRecord(
       createRecord({
@@ -208,34 +226,50 @@ export class Wallet {
   }
 
   /** Checks an offer received from another agent, signs it and seals it in the register. */
-  async accept(offer: Offer): Promise<{ entry: string; confirmation: Confirmation; counterparty: CounterpartyCheck }> {
+  /**
+   * Checks an offer received from another agent, signs it and seals it in the register.
+   * Every other party is checked (signature, mandate, owner, revocations, amount) before anything is signed.
+   */
+  async accept(
+    offer: Offer,
+    opts: { allowUnverifiedOwner?: boolean } = {},
+  ): Promise<{ entry: string; confirmation: Confirmation; counterparty: CounterpartyCheck; counterparties: CounterpartyCheck[] }> {
     const mine = this.myMandate();
+    if (!offer || typeof offer !== "object") throw new Error("not an offer");
     const { record, opened, mandates } = offer;
+    const shape = recordProblem(record);
+    if (shape) throw new Error(`the offer is malformed: ${shape}`);
+    if (record.body.type !== "accord/agreement") throw new Error("the offer is not an agreement");
+    if (!Array.isArray(mandates)) throw new Error("the offer has no mandates");
     const me = record.body.parties.find((p) => p.agent === this.key.publicKey);
     if (!me) throw new Error("this offer is not addressed to me");
     if (me.mandate !== mandateId(mine)) throw new Error("the offer refers to a different mandate of mine");
-    if (!verifyOpened(opened) || opened.root !== record.body.clausesRoot || opened.count !== record.body.clauseCount)
-      throw new Error("the clauses do not match the signed agreement");
-    const proposer = record.body.parties.find((p) => p.agent !== this.key.publicKey)!;
-    const sig = record.signatures.find((s) => s.agent === proposer.agent);
-    if (!sig || !verifyValue(record.body, sig.signature, proposer.agent)) throw new Error("the proposer's signature is invalid");
-    const theirMandate = mandates.find((m) => mandateId(m) === proposer.mandate);
-    if (!theirMandate || theirMandate.body.agent !== proposer.agent) throw new Error("the proposer has no valid mandate");
-    const counterparty = await this.checkCounterparty(theirMandate);
-    if (counterparty.revoked) throw new Error(`the proposer's mandate was revoked on ${counterparty.revoked.at}`);
+    if (!opened || !verifyOpened(opened) || opened.root !== record.body.clausesRoot || opened.count !== record.body.clauseCount)
+      throw new Error("the clauses do not match the signed agreement (or a clause name is repeated or not allowed)");
+
+    const others = record.body.parties.filter((p) => p.agent !== this.key.publicKey);
+    const theirMandates: Mandate[] = [];
+    const counterparties: CounterpartyCheck[] = [];
+    for (const p of others) {
+      const who = p.agent.slice(8, 16);
+      const sig = record.signatures.find((s) => s.agent === p.agent);
+      if (!sig || !verifyValue(record.body, sig.signature, p.agent)) throw new Error(`the signature of agent ${who} is missing or invalid`);
+      const m = mandates.find((x) => !mandateProblem(x) && mandateId(x) === p.mandate);
+      if (!m || m.body.agent !== p.agent) throw new Error(`agent ${who} has no valid mandate in the offer`);
+      counterparties.push(await this.requireCounterparty(m, opts.allowUnverifiedOwner));
+      theirMandates.push(m);
+    }
     await this.refuseIfRevoked(mine, "my");
-    if (!verifyMandateSignature(theirMandate) || !withinValidity(theirMandate, this.now().toISOString()))
-      throw new Error("the proposer's mandate is invalid or expired");
-    const clauses = Object.fromEntries(opened.clauses.map((c) => [c.name, c.value]));
+    const clauses = clausesObject(opened);
     this.checkAmount(clauses, mine);
-    this.checkAmount(clauses, theirMandate);
+    for (const m of theirMandates) this.checkAmount(clauses, m);
 
     const signed = signRecord(record, this.key);
     const entry = entryHash(signed);
     const receipt = await this.register.append(entry);
-    this.state.records[entry] = { kind: "agreement", record: signed, opened, mandates: [theirMandate, mine], receipt };
+    this.state.records[entry] = { kind: "agreement", record: signed, opened, mandates: [...theirMandates, mine], receipt };
     await this.persist();
-    return { entry, confirmation: { type: "accord/confirmation", record: signed, receipt }, counterparty };
+    return { entry, confirmation: { type: "accord/confirmation", record: signed, receipt }, counterparty: counterparties[0], counterparties };
   }
 
   /** The proposer files the counterparty's confirmation. */
@@ -292,10 +326,18 @@ export class Wallet {
   }
 
   private checkAmount(clauses: Record<string, Json>, m: Mandate) {
-    const amount = clauses["amount"] as unknown as Amount | undefined;
+    const amount = (Object.prototype.hasOwnProperty.call(clauses, "amount") ? clauses["amount"] : undefined) as unknown as Amount | undefined;
     const max = m.body.maxAmount;
-    if (!amount || !max) return;
-    if (amount.currency !== max.currency || !amountLeq(amount.value, max.value))
+    if (amount === undefined || !max) return;
+    if (!amount || typeof amount !== "object" || typeof amount.value !== "string" || typeof amount.currency !== "string")
+      throw new Error("the amount clause must be {value: '123.45', currency: 'EUR'}");
+    let within = false;
+    try {
+      within = amount.currency === max.currency && amountLeq(amount.value, max.value);
+    } catch {
+      throw new Error(`invalid amount ${amount.value}`);
+    }
+    if (!within)
       throw new Error(`amount ${amount.value} ${amount.currency} exceeds the mandate of ${m.body.owner.domain} (${max.value} ${max.currency})`);
   }
 }
