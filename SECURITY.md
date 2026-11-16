@@ -35,7 +35,8 @@ Testing done in good faith within these limits is welcome, and we will not take 
 
 These are known and being worked on; reports that add something new about them are still welcome:
 
-- The register's public key is read from the register itself; it is not yet pinned from an independent source.
+- The register's public key is pinned in the code and the npm package (`src/known-registers.ts`); it is not yet
+  also published through a second channel (for example a DNS record).
 - No independent witnesses countersign the register yet; between daily Bitcoin anchors, the operator could
   in principle show different histories to different people.
 - An owner is verified only by control of a web domain; free domains cost nothing.

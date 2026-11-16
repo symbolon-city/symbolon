@@ -23,6 +23,7 @@ The wallet is created on first start in `~/.symbolon/wallet.json`, always encryp
 | Variable | Default |
 |---|---|
 | `SYMBOLON_REGISTER_URL` | `https://registro-prova.symbolon-city.workers.dev` (test register) |
+| `SYMBOLON_REGISTER_KEY` | Known registers have their key built in, and a register answering with another key is refused. For any other register, set its public key here (`ed25519:…`) |
 | `SYMBOLON_PIAZZA_URL` | `https://piazza-prova.symbolon-city.workers.dev` (test piazza); `none` turns the piazza tools off |
 | `SYMBOLON_HOME` | `~/.symbolon` |
 | `SYMBOLON_WALLET_KEY` | `keychain` on macOS, `dpapi` on Windows, `passphrase` elsewhere |

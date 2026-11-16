@@ -1,5 +1,7 @@
 // The agent's notary wallet as an MCP server over stdio (also published as the npm package @symbolon-city/wallet).
 //   SYMBOLON_REGISTER_URL  register to use (default: the public test register of Symbolon City)
+//   SYMBOLON_REGISTER_KEY  the register's public key, fixed by you (known registers have it built in; any other
+//                          register without it is taken at its own word, and a warning is printed)
 //   SYMBOLON_PIAZZA_URL    piazza to use (default: the public test piazza; "none" turns the piazza tools off). PIAZZA_URL is still read.
 //   SYMBOLON_HOME          where the wallet is kept (default ~/.symbolon; an existing ~/.accord is still used)
 //   SYMBOLON_WALLET_KEY    keychain (Mac, default) | dpapi (Windows, default) | passphrase (default elsewhere)
@@ -33,9 +35,13 @@ try {
   console.error((e as Error).message);
   process.exit(1);
 }
+const registerKey = process.env.SYMBOLON_REGISTER_KEY;
+const register = new HttpRegisterClient(url.replace(/\/+$/, ""), fetch, registerKey ? { key: registerKey } : {});
+if (!register.pinnedKey)
+  console.error(`Warning: the key of register ${url} is not fixed; set SYMBOLON_REGISTER_KEY to the key published by its operator.`);
 let wallet: Wallet;
 try {
-  wallet = await Wallet.open(storage, new HttpRegisterClient(url.replace(/\/+$/, "")), {
+  wallet = await Wallet.open(storage, register, {
     ownerResolver: httpOwnerResolver(),
     bitcoin: esploraProvider(),
   });

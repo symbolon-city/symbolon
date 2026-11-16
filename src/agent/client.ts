@@ -2,7 +2,8 @@
 
 import type { Anchor } from "../anchor.js";
 import type { PublicKey } from "../keys.js";
-import type { Receipt, SignedTreeHead } from "../register.js";
+import { pinnedRegisterKey } from "../known-registers.js";
+import { verifyHeadSignature, type Receipt, type SignedTreeHead } from "../register.js";
 import { fetchAllRevocations, type RegisteredRevocation, type Revocation } from "../revocation.js";
 
 export interface RegisterClient {
@@ -19,10 +20,20 @@ export interface RegisterClient {
 }
 
 export class HttpRegisterClient implements RegisterClient {
+  /**
+   * The register's key fixed outside the register: given in `opts.key`, or taken from the list of known
+   * registers (src/known-registers.ts). When set, a different key announced by the register, or a head
+   * signed by another key, is refused. Undefined for an unknown register given without a key.
+   */
+  readonly pinnedKey: PublicKey | undefined;
+
   constructor(
     private readonly baseUrl: string,
     private readonly fetchImpl: typeof fetch = fetch,
-  ) {}
+    opts: { key?: PublicKey } = {},
+  ) {
+    this.pinnedKey = opts.key ?? pinnedRegisterKey(baseUrl);
+  }
 
   private async get<T>(path: string): Promise<T | null> {
     const res = await this.fetchImpl(this.baseUrl + path);
@@ -31,12 +42,25 @@ export class HttpRegisterClient implements RegisterClient {
     return (await res.json()) as T;
   }
 
+  /** Refuses a head that is not signed by the pinned key (no-op without a pinned key). */
+  private checkHead<H extends SignedTreeHead | null | undefined>(head: H): H {
+    if (!this.pinnedKey || !head) return head;
+    if (head.log !== this.pinnedKey || !verifyHeadSignature(head))
+      throw new Error(`the register's answer is not signed by its pinned key (${this.pinnedKey}): refusing it`);
+    return head;
+  }
+
   async info() {
     const r =
       (await this.get<{ register_key: PublicKey }>("/.well-known/symbolon-register.json")) ??
       (await this.get<{ register_key: PublicKey }>("/.well-known/accord-register.json")); // earlier name
     if (!r) throw new Error("not a Symbolon register");
-    return r;
+    if (this.pinnedKey && r.register_key !== this.pinnedKey)
+      throw new Error(
+        `register key mismatch: ${this.baseUrl} announces ${r.register_key}, but its pinned key is ${this.pinnedKey}. ` +
+          "Refusing it: it may be an impostor, or the register was replaced (then update to a wallet version that knows the new key).",
+      );
+    return { register_key: this.pinnedKey ?? r.register_key };
   }
   async append(entry: string) {
     const res = await this.fetchImpl(this.baseUrl + "/v1/entries", {
@@ -45,13 +69,17 @@ export class HttpRegisterClient implements RegisterClient {
       body: JSON.stringify({ entry }),
     });
     if (!res.ok) throw new Error(`register refused the entry: HTTP ${res.status}`);
-    return (await res.json()) as Receipt;
+    const receipt = (await res.json()) as Receipt;
+    this.checkHead(receipt.head);
+    return receipt;
   }
-  receipt(entry: string) {
-    return this.get<Receipt>(`/v1/entries/${entry}`);
+  async receipt(entry: string) {
+    const r = await this.get<Receipt>(`/v1/entries/${entry}`);
+    this.checkHead(r?.head);
+    return r;
   }
-  head() {
-    return this.get<SignedTreeHead>("/v1/head");
+  async head() {
+    return this.checkHead(await this.get<SignedTreeHead>("/v1/head"));
   }
   async consistency(from: number, to: number) {
     const r = await this.get<{ proof: string[] }>(`/v1/consistency?from=${from}&to=${to}`);

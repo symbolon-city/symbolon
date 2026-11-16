@@ -115,8 +115,10 @@ An append-only Merkle log (RFC 9162, Certificate Transparency v2) that sees only
 - Each day the latest head is anchored in Bitcoin through OpenTimestamps.
 - Revocation id = fingerprint of the canonical revocation `body`.
 
-> Known limit of version 1 (being fixed): the register's key is read from the register itself. A verifier
-> should pin it from an independent source.
+> **Pin the register's key.** Never take it from the register's own answer alone: whoever controls the address
+> or the connection could present a register of its own. Known registers and their keys are listed in
+> [`src/known-registers.ts`](../src/known-registers.ts) (also inside the npm package, built by GitHub with
+> provenance); the test register is `ed25519:0b26c53a5dbc29498b786b0d0f308717350d48cdb234d6381e7c9473a0e26f96`.
 
 ## 8. Test vectors
 
