@@ -162,9 +162,11 @@ export class Wallet {
     const now = this.now().getTime();
     const notBefore = new Date(Math.max(now - 60_000, Date.parse(mine.body.notBefore))).toISOString();
     const notAfter = new Date(Math.min(now + p.hours * 3_600_000, Date.parse(mine.body.notAfter))).toISOString();
-    const maxAmount = p.maxAmount ?? mine.body.maxAmount;
     const mineTotal = mine.body.type === "symbolon/submandate" ? mine.body.total : undefined;
     const total = p.total ?? mineTotal;
+    let maxAmount = p.maxAmount ?? mine.body.maxAmount;
+    // An inherited limit per agreement never goes above the sub-mandate's own total.
+    if (!p.maxAmount && maxAmount && total && maxAmount.currency === total.currency && !amountLeq(maxAmount.value, total.value)) maxAmount = total;
     return createSubMandate(this.key, mine, {
       agent: p.agent, scope: p.scope, notBefore, notAfter, charter: mine.body.charter,
       ...(maxAmount ? { maxAmount } : {}), ...(total ? { total } : {}), ...(p.task ? { task: p.task } : {}),

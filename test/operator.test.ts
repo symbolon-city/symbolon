@@ -204,3 +204,70 @@ test("revocations: cancel one task; the issuer stops its sub-agent; the owner st
   assert.ok(after.revoked);
   await assert.rejects(a2.propose({ counterparty: c.agency.myMandate(), clauses }), /revoked/);
 });
+
+// Piano A (15/11 five viewpoints): the holes in the limits of automatic mode.
+test("limits A1: every task has a total and a cap per agreement, even when the request names no amount", async () => {
+  const c = await city();
+  const t = asTask(c.operator.newTask({ instruction: "do it", principalId: "p", total: EUR("200.00") }));
+  assert.deepEqual((t.mandate.body as SubMandateBody).total, EUR("200.00"));
+  // No amount at all: the operator's cap per task (1000) is above the confirmation threshold (300), so the person confirms.
+  const ask = c.operator.newTask({ instruction: "no amount", principalId: "p" });
+  assert.ok("needsConfirmation" in ask && ask.question === "Confirm up to 1000.00 EUR?");
+  const noAmount = asTask(c.operator.newTask({ instruction: "no amount", principalId: "p", confirmed: true }));
+  const b = noAmount.mandate.body as SubMandateBody;
+  assert.deepEqual(b.total, EUR("1000.00"));
+  assert.deepEqual(b.maxAmount, EUR("500.00"), "never above the issuing mandate's cap per agreement");
+  // Only a cap per agreement in the request: the total still comes from the operator's cap.
+  const perOnly = asTask(c.operator.newTask({ instruction: "x", principalId: "p", maxAmount: EUR("40.00"), confirmed: true }));
+  assert.deepEqual((perOnly.mandate.body as SubMandateBody).total, EUR("1000.00"));
+  assert.deepEqual(perOnly.mandate.body.maxAmount, EUR("40.00"));
+});
+
+test("limits A2: caps are required; per agreement never above the total; confirmation looks at both", async () => {
+  const c = await city();
+  assert.throws(() => setupOperator({ domain: "x.example" } as Parameters<typeof setupOperator>[0]), /capPerAgreement is required/);
+  assert.throws(() => new Operator({ issuerSecretHex: c.setup.issuerSecretHex, issuingMandate: c.setup.issuingMandate } as ConstructorParameters<typeof Operator>[0]), /capPerTask is required/);
+  // A request with a per-agreement limit above its own total gets the total as its per-agreement limit.
+  const t = asTask(c.operator.newTask({ instruction: "x", principalId: "p", maxAmount: EUR("400.00"), total: EUR("50.00") }));
+  assert.deepEqual(t.mandate.body.maxAmount, EUR("50.00"));
+  // Above the issuing cap per agreement: refused, not silently raised.
+  assert.throws(() => c.operator.newTask({ instruction: "x", principalId: "p", maxAmount: EUR("600.00"), total: EUR("900.00"), confirmed: true }), /at most 500\.00 EUR per agreement/);
+  // Confirmation: a large total with a small per-agreement limit still asks.
+  const ask = c.operator.newTask({ instruction: "x", principalId: "p", maxAmount: EUR("10.00"), total: EUR("900.00") });
+  assert.ok("needsConfirmation" in ask);
+});
+
+test("limits A3: a link can never allow more per agreement than a total above it or its own", async () => {
+  const c = await city();
+  const task = asTask(c.operator.newTask({ instruction: "x", principalId: "p", total: EUR("50.00") }));
+  const agentKey = keyPairFromSecret(task.agentSecretHex);
+  const base = { agent: generateKeyPair().publicKey, scope: "x", notBefore: task.mandate.body.notBefore, notAfter: task.mandate.body.notAfter };
+  // Child of a 50 EUR task with 50 per agreement but a 5000 total: refused (total above the parent's).
+  assert.throws(() => createSubMandate(agentKey, task.mandate, { ...base, maxAmount: EUR("50.00"), total: EUR("5000.00") }), /bigger total/);
+  // Child with a per-agreement limit above its own total.
+  assert.throws(() => createSubMandate(agentKey, task.mandate, { ...base, maxAmount: EUR("50.00"), total: EUR("10.00") }), /its own total/);
+  // A hand-made chain where the task's per-agreement limit is above the task's total is refused too.
+  const issuerKey = keyPairFromSecret(c.setup.issuerSecretHex);
+  const b = task.mandate.body as SubMandateBody;
+  const bad = { ...b, maxAmount: EUR("500.00"), total: EUR("50.00") };
+  assert.equal(verifyMandateSignature({ body: bad, signature: signValue(bad, issuerKey), chain: task.mandate.chain }), false);
+});
+
+test("limits A4: the counterparty sees the real limit of the whole chain", async () => {
+  const c = await city();
+  const agent = await c.taskWallet(asTask(c.operator.newTask({ instruction: "x", principalId: "p", total: EUR("50.00") })));
+  const sub = await agent.delegate({ agent: generateKeyPair().publicKey, scope: "part", total: EUR("15.00"), hours: 1 });
+  assert.deepEqual(sub.body.maxAmount, EUR("15.00"), "the inherited per-agreement limit is lowered to the sub-mandate's total");
+  const seen = await c.agency.checkCounterparty(sub);
+  assert.deepEqual(seen.limit, EUR("15.00"));
+});
+
+test("limits A5: the daily counter can be kept outside the process", async () => {
+  const c = await city();
+  const shared = new Map<string, number>();
+  const countTask = (day: string) => { const n = (shared.get(day) ?? 0) + 1; shared.set(day, n); return n; };
+  const mk = () => new Operator({ issuerSecretHex: c.setup.issuerSecretHex, issuingMandate: c.setup.issuingMandate, capPerTask: EUR("100.00"), tasksPerDay: 2, countTask });
+  asTask(mk().newTask({ instruction: "a", principalId: "p" }));
+  asTask(mk().newTask({ instruction: "b", principalId: "p" }));
+  assert.throws(() => mk().newTask({ instruction: "c", principalId: "p" }), /daily limit/, "a restart (new Operator) does not reset the count");
+});

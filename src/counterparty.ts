@@ -2,7 +2,7 @@
 // published on the owner's website (level "domain"), and not revoked. Used by the agent wallet
 // and by the visitors' door, which has no wallet.
 
-import { verifyMandateSignature, withinValidity, type Amount, type Mandate } from "./mandate.js";
+import { spendingLimit, verifyMandateSignature, withinValidity, type Amount, type Mandate } from "./mandate.js";
 import { revocationsOf, signersOf, subjectsOf, type RevocationSource } from "./revocation.js";
 import type { OwnerResolver } from "./wellknown.js";
 
@@ -14,6 +14,8 @@ export interface CounterpartyCheck {
   maxAmount?: Amount;
   /** For a task or sub-mandate: the limit for everything done under it. */
   total?: Amount;
+  /** The most one agreement with this agent can be worth: the smallest limit along its whole chain. */
+  limit?: Amount;
   validUntil: string;
   /** How the agent holds its mandate: directly from the owner, or through a chain (operator task, subcontracting). */
   via: { links: number; task: boolean };
@@ -61,6 +63,7 @@ export async function checkMandate(
     scope: m.body.scope,
     maxAmount: m.body.maxAmount,
     ...(m.body.type === "symbolon/submandate" && m.body.total ? { total: m.body.total } : {}),
+    ...(spendingLimit(m) ? { limit: spendingLimit(m) } : {}),
     validUntil: m.body.notAfter,
     via: { links: (m.chain?.length ?? 0) + 1, task: m.body.type === "symbolon/submandate" && !!m.body.task },
     ...(revoked ? { revoked } : {}),

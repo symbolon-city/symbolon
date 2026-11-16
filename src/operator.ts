@@ -30,13 +30,14 @@ export interface OperatorSetup {
 /** One-time setup: an owner key, the file to publish, a server key and its issuing mandate. */
 export function setupOperator(o: {
   domain: string;
-  /** Cap per agreement for any task (e.g. 500 EUR). Without it tasks have no money cap from above. */
-  capPerAgreement?: Amount;
+  /** Cap per agreement for any task (e.g. 500 EUR). Required: every chain starts with a money cap. */
+  capPerAgreement: Amount;
   /** How long the issuing mandate lasts (default 90 days); renew it with a new one before it ends. */
   days?: number;
   ownerSecretHex?: string;
   now?: Date;
 }): OperatorSetup {
+  if (!o.capPerAgreement) throw new Error("capPerAgreement is required: every task needs a money cap from above");
   const now = o.now ?? new Date();
   const owner = o.ownerSecretHex ? keyPairFromSecret(o.ownerSecretHex) : generateKeyPair();
   const issuer = generateKeyPair();
@@ -44,7 +45,7 @@ export function setupOperator(o: {
     ownerDomain: o.domain,
     agent: issuer.publicKey,
     scope: `issues task mandates for the agents that ${o.domain} runs for its customers`,
-    ...(o.capPerAgreement ? { maxAmount: o.capPerAgreement } : {}),
+    maxAmount: o.capPerAgreement,
     notBefore: new Date(now.getTime() - 60_000).toISOString(),
     notAfter: new Date(now.getTime() + (o.days ?? 90) * 86_400_000).toISOString(),
     charter: "accord-charter/0.1",
@@ -70,7 +71,7 @@ export type TaskRequest = {
   scope?: string;
   /** Limit per agreement. */
   maxAmount?: Amount;
-  /** Limit for the whole task. */
+  /** Limit for the whole task (default: the operator's capPerTask). */
   total?: Amount;
   /** Validity in hours (default 24, at most the operator's maxTaskHours). */
   hours?: number;
@@ -91,15 +92,25 @@ export class Operator {
       issuingMandate: Mandate;
       /** Above this (per agreement or total) the person must confirm once ("Confirm up to 300 EUR?"). */
       confirmAbove?: Amount;
-      /** Hard cap per task, whatever the request says. */
-      capPerTask?: Amount;
+      /** Hard cap per task, whatever the request says. Required: a task without amounts gets this as its total. */
+      capPerTask: Amount;
       maxTaskHours?: number;
       /** At most this many task mandates a day (default 10,000). */
       tasksPerDay?: number;
+      /**
+       * Counts one more task for the day and returns the new count. The default counts in memory, which
+       * restarts at zero with the process: on a server with several instances or restarts, pass a counter
+       * kept in a shared store.
+       */
+      countTask?: (day: string) => number;
       now?: () => Date;
     },
   ) {
     this.issuer = keyPairFromSecret(o.issuerSecretHex);
+    if (!o.capPerTask) throw new Error("capPerTask is required: every task needs a money cap");
+    const pcap = o.issuingMandate.body.maxAmount;
+    if (!pcap) throw new Error("the issuing mandate has no cap per agreement (maxAmount): make it with setupOperator");
+    if (pcap.currency !== o.capPerTask.currency) throw new Error("capPerTask and the issuing mandate's cap must be in the same currency");
     if (o.issuingMandate.body.agent !== this.issuer.publicKey) throw new Error("the issuing mandate is for another key");
   }
 
@@ -117,28 +128,36 @@ export class Operator {
    */
   newTask(r: TaskRequest): Task | { needsConfirmation: true; question: string } {
     const cap = this.o.capPerTask;
+    const pcap = this.o.issuingMandate.body.maxAmount!;
     const over = (a: Amount | undefined, b: Amount | undefined) => !!a && !!b && (a.currency !== b.currency || !amountLeq(a.value, b.value));
-    for (const a of [r.maxAmount, r.total]) if (over(a, cap)) throw new Error(`this operator allows at most ${cap!.value} ${cap!.currency} per task`);
-    const top = r.total ?? r.maxAmount;
-    if (top && over(top, this.o.confirmAbove) && !r.confirmed)
-      return { needsConfirmation: true, question: `Confirm up to ${top.value} ${top.currency}?` };
+    const min = (a: Amount, b: Amount) => (amountLeq(a.value, b.value) ? a : b);
+    for (const a of [r.maxAmount, r.total]) if (over(a, cap)) throw new Error(`this operator allows at most ${cap.value} ${cap.currency} per task`);
+    if (over(r.maxAmount, pcap)) throw new Error(`this operator allows at most ${pcap.value} ${pcap.currency} per agreement`);
+    // The task always has a total (the request's, or the operator's cap) and a limit per agreement that is
+    // never above the total nor the issuing mandate's cap.
+    const total = r.total ?? cap;
+    const perAgreement = min(min(r.maxAmount ?? total, total), pcap);
+    // The person confirms whenever what the agent could spend (per agreement or in total) is above the threshold.
+    if ((over(total, this.o.confirmAbove) || over(perAgreement, this.o.confirmAbove)) && !r.confirmed)
+      return { needsConfirmation: true, question: `Confirm up to ${total.value} ${total.currency}?` };
     const day = this.now().toISOString().slice(0, 10);
-    const n = (this.issuedToday.get(day) ?? 0) + 1;
+    let n: number;
+    if (this.o.countTask) n = this.o.countTask(day);
+    else {
+      n = (this.issuedToday.get(day) ?? 0) + 1;
+      this.issuedToday = new Map([[day, n]]);
+    }
     if (n > (this.o.tasksPerDay ?? 10_000)) throw new Error("daily limit of new tasks reached");
-    this.issuedToday = new Map([[day, n]]);
     const hours = Math.min(r.hours ?? 24, this.o.maxTaskHours ?? 24 * 7);
     const agent = r.agentKey ? null : generateKeyPair();
     const { task, salt } = taskCommitments(r.instruction, r.principalId);
     const parent = this.o.issuingMandate;
     const now = this.now().getTime();
-    // Per agreement: what the request says; else, under a capped issuing mandate, the smaller of its cap and the task total.
-    const pcap = parent.body.maxAmount;
-    const perAgreement = r.maxAmount ?? (pcap ? (r.total && !over(r.total, pcap) ? r.total : pcap) : undefined);
     const mandate = createSubMandate(this.issuer, parent, {
       agent: r.agentKey ?? agent!.publicKey,
       scope: r.scope ?? `task for a customer of ${this.domain}`,
-      ...(perAgreement ? { maxAmount: perAgreement } : {}),
-      ...(r.total ? { total: r.total } : {}),
+      maxAmount: perAgreement,
+      total,
       notBefore: new Date(Math.max(now - 60_000, Date.parse(parent.body.notBefore))).toISOString(),
       notAfter: new Date(Math.min(now + hours * 3_600_000, Date.parse(parent.body.notAfter))).toISOString(),
       task,

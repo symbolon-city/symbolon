@@ -237,6 +237,9 @@ export function chainProblem(m: Mandate): string | null {
     if (!atMost(b.maxAmount, above.body.maxAmount)) return "a link allows a bigger amount per agreement than the mandate above it";
     const aboveTotal = above.body.type === "symbolon/submandate" ? above.body.total : undefined;
     if (!atMost(b.total, aboveTotal)) return "a link allows a bigger total than the mandate above it";
+    // Per agreement never above a total: neither the link's own, nor the one of the link above.
+    if (b.maxAmount && !atMost(b.maxAmount, aboveTotal)) return "a link allows a bigger amount per agreement than the total of the mandate above it";
+    if (b.maxAmount && b.total && !atMost(b.maxAmount, b.total)) return "a link allows a bigger amount per agreement than its own total";
   }
   return null;
 }
@@ -275,9 +278,33 @@ export function amountLeq(a: string, b: string): boolean {
   return scale(a) <= scale(b);
 }
 
-/** The spending limit that applies to one agreement under this mandate: per agreement, or else the total of a sub-mandate. */
+/**
+ * The spending limit that really applies to one agreement under this mandate: the smallest limit
+ * (per agreement or total) of any link of its chain, so a counterparty sees what the agent can actually
+ * commit to. If two limits are in different currencies the mandate allows nothing ("0" in the first one).
+ *
+ * The total is a promise kept by whoever issues the mandate (the operator's software, the agent's wallet):
+ * the city checks that each link stays within the link above, but it does not add up what several
+ * sub-mandates of the same parent spend together. One agreement never exceeds this limit; the sum of many
+ * agreements is the issuer's responsibility.
+ */
 export function spendingLimit(m: Mandate): Amount | undefined {
-  return m.body.maxAmount ?? (m.body.type === "symbolon/submandate" ? m.body.total : undefined);
+  let min: Amount | undefined;
+  for (const l of linksOf(m)) {
+    for (const a of [l.body.maxAmount, l.body.type === "symbolon/submandate" ? l.body.total : undefined]) {
+      if (!a) continue;
+      if (!min) min = a;
+      else if (a.currency !== min.currency) return { value: "0", currency: min.currency };
+      else {
+        try {
+          if (amountLeq(a.value, min.value)) min = a;
+        } catch {
+          return { value: "0", currency: min.currency };
+        }
+      }
+    }
+  }
+  return min;
 }
 
 /** True if a clause value is, or contains at any depth, an object shaped like an amount ({value, currency} or {amount, currency}). */
