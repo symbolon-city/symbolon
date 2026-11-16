@@ -6,6 +6,7 @@
 import { randomBytes, toHex } from "../bytes.js";
 import { signValue, verifyValue, type KeyPair } from "../keys.js";
 import { mandateProblem, verifyMandateSignature, withinValidity, type Mandate } from "../mandate.js";
+import type { Box, BoxKeyClaim } from "../channel.js";
 
 export const CATEGORIES = ["data", "service", "tool", "research", "translation", "content", "logistics", "goods", "other"] as const;
 export type Category = (typeof CATEGORIES)[number];
@@ -38,7 +39,16 @@ export type Action =
   | { op: "contact"; postId: string; reply: Reply }
   | { op: "inbox" }
   | { op: "withdraw"; postId: string }
-  | { op: "ask"; question: string };
+  | { op: "ask"; question: string }
+  /** Publishes this agent's box key, so that other agents can send it sealed forms (src/channel.ts). */
+  | { op: "box_key"; claim: BoxKeyClaim }
+  /** Sends a sealed form to the other agent of a conversation that started on a post. The piazza cannot open it. */
+  | { op: "send"; to: string; postId: string; box: Box }
+  /** Sealed forms addressed to this agent, oldest first, after a cursor. */
+  | { op: "messages"; after?: string };
+
+/** Quantity limits of the channel between agents (also stated in the piazza rules). */
+export const CHANNEL_LIMITS = { messagesPerAgentPerDay: 100, keepDays: 30, pageSize: 50 } as const;
 
 export interface EnvelopeBody {
   type: "piazza/envelope";
@@ -62,6 +72,15 @@ export function signEnvelope(agent: KeyPair, mandate: Mandate, audience: string,
 }
 
 export const MAX_SKEW_MS = 5 * 60_000;
+
+/**
+ * Checks an envelope kept by the piazza and read later by its recipient (a sealed form): same checks as
+ * checkEnvelope, at the time it was sent rather than now. The piazza checked freshness when it accepted it.
+ */
+export function checkStoredEnvelope(e: Envelope, audience: string): string | null {
+  const t = Date.parse(e?.body?.createdAt);
+  return Number.isFinite(t) ? checkEnvelope(e, audience, new Date(t)) : "envelope has no valid date";
+}
 
 /** Checks signature, mandate and freshness. Owner-domain check is done by the server. */
 export function checkEnvelope(e: Envelope, audience: string, now = new Date()): string | null {

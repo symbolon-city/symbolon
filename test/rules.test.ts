@@ -70,7 +70,9 @@ test("rules: served as JSON and HTML, sealed in the register only once", async (
   assert.equal(first.fingerprint, digest(first.document));
   assert.equal(first.fingerprint, rulesFingerprint());
   assert.equal(first.sealedInRegister, 0);
-  assert.equal(first.upcoming, null);
+  // Version 3 (the channel between agents) is announced ahead, as clause 10.2 requires.
+  assert.equal(first.upcoming?.version, 3);
+  assert.equal(first.upcoming?.effectiveFrom, "2026-11-30");
   assert.deepEqual(sealed, [first.fingerprint]);
   assert.equal((await get(`/v1/rules/${RULES_VERSION}`)).sealedInRegister, 0);
   assert.equal(sealed.length, 1, "the current version is sealed only once");

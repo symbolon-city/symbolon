@@ -3,7 +3,7 @@
 // Only fingerprints ever go to the register.
 
 import type { BlockProvider } from "../anchor.js";
-import type { Json } from "../canonical.js";
+import { canonical, type Json } from "../canonical.js";
 import { clauseNamesProblem, clausesObject, commitClauses, disclose, verifyOpened, type OpenedClauses } from "../clauses.js";
 import { generateKeyPair, keyPairFromSecret, verifyValue, type KeyPair, type PublicKey } from "../keys.js";
 import { toHex } from "../bytes.js";
@@ -16,7 +16,8 @@ import type { RegisterClient } from "./client.js";
 import { checkMandate, type CounterpartyCheck } from "../counterparty.js";
 import { answerChallenge, newChallenge, possessionProblem, type PossessionAnswer } from "../possession.js";
 import { revocationsOf, signersOf, subjectsOf } from "../revocation.js";
-import { signEnvelope, type Action, type Envelope } from "../piazza/messages.js";
+import { checkStoredEnvelope, signEnvelope, type Action, type Envelope } from "../piazza/messages.js";
+import { FORM_MEANING, boxKeyClaim, boxKeyClaimProblem, formProblem, newBoxSecret, openBox, sealBox, type BoxKeyClaim, type BoxSecret, type Form } from "../channel.js";
 
 export interface StoredRecord {
   kind: "action" | "agreement";
@@ -48,6 +49,10 @@ export interface WalletState {
   mandate?: Mandate;
   records: Record<string, StoredRecord>; // by entry hash
   offers: Record<string, StoredRecord>; // by clause root, waiting for the counterparty
+  /** X25519 key for sealed forms from other agents (src/channel.ts), created on first use. */
+  box?: BoxSecret;
+  /** Piazzas (by origin) where this wallet's box key is published. */
+  boxPublished?: string[];
 }
 
 export interface WalletStorage {
@@ -141,6 +146,68 @@ export class Wallet {
   /** Signs a piazza envelope with this agent's key and mandate. The key never leaves the wallet. */
   signPiazzaEnvelope(audience: string, action: Action): Envelope {
     return signEnvelope(this.key, this.myMandate(), audience, action, this.now());
+  }
+
+  // ---------- the channel between agents (sealed forms) ----------
+
+  private async boxSecret(): Promise<BoxSecret> {
+    if (!this.state.box) {
+      this.state.box = await newBoxSecret();
+      await this.persist();
+    }
+    return this.state.box;
+  }
+
+  /** This wallet's box key, signed by the agent key, to publish once in a piazza. */
+  async myBoxKeyClaim(): Promise<BoxKeyClaim> {
+    return boxKeyClaim(this.key, await this.boxSecret(), this.now());
+  }
+  boxKeyPublishedAt(piazza: string): boolean {
+    return (this.state.boxPublished ?? []).includes(piazza);
+  }
+  async markBoxKeyPublished(piazza: string) {
+    this.state.boxPublished = [...new Set([...(this.state.boxPublished ?? []), piazza])];
+    await this.persist();
+  }
+
+  /**
+   * Seals a form for another agent. Only fixed forms travel (src/channel.ts); the recipient's box key must be
+   * signed by that very agent. An offer sent this way is one this wallet made (symbolon_propose_agreement).
+   */
+  async sealForm(p: { to: PublicKey; toBoxKey: unknown; postId: string; form: Form }) {
+    const bad = boxKeyClaimProblem(p.toBoxKey, p.to) ?? formProblem(p.form, this.now());
+    if (bad) throw new Error(bad);
+    if (p.form.form === "offer") {
+      const root = (p.form.offer as unknown as Offer)?.record?.body?.clausesRoot;
+      if (!root || !this.state.offers[root]) throw new Error("send only offers made by this wallet (symbolon_propose_agreement)");
+    }
+    return sealBox(p.form as unknown as Json, (p.toBoxKey as BoxKeyClaim).body.key, { from: this.key.publicKey, to: p.to, postId: p.postId });
+  }
+
+  /**
+   * Opens a sealed form received through a piazza: the envelope must be signed by the sender named in its
+   * mandate, addressed to this agent, and the box must open and hold exactly one of the fixed forms.
+   * The sender's mandate is checked like any counterparty's (owner key, revocations).
+   */
+  async openForm(envelope: Envelope, piazza: string) {
+    const bad = checkStoredEnvelope(envelope, piazza);
+    if (bad) throw new Error(bad);
+    const a = envelope.body.action;
+    if (a.op !== "send") throw new Error("not a sealed form");
+    if (a.to !== this.key.publicKey) throw new Error("this form is addressed to another agent");
+    const from = envelope.mandate.body.agent;
+    const form = await openBox(a.box, await this.boxSecret(), { from, to: this.key.publicKey, postId: a.postId });
+    const problem = formProblem(form, new Date(Date.parse(envelope.body.createdAt)));
+    if (problem) throw new Error(`the box holds something that is not a valid form (${problem}): ignored`);
+    const sender = await this.checkCounterparty(envelope.mandate);
+    const f = form as Form;
+    return {
+      from: { agent: from, owner: sender.owner, level: sender.level, ok: sender.ok, problems: sender.problems },
+      postId: a.postId,
+      sentAt: envelope.body.createdAt,
+      form: f,
+      meaning: FORM_MEANING[f.form],
+    };
   }
 
   async installMandate(m: Mandate): Promise<CounterpartyCheck> {
@@ -351,7 +418,8 @@ export class Wallet {
   async confirm(c: Confirmation): Promise<{ entry: string }> {
     const pending = this.state.offers[c.record.body.clausesRoot];
     if (!pending) throw new Error("no offer of mine matches this confirmation");
-    if (JSON.stringify(pending.record.body) !== JSON.stringify(c.record.body)) throw new Error("the confirmed agreement differs from my offer");
+    // Compared in canonical form: the same agreement may come back with its fields in another order (e.g. through a sealed form).
+    if (!c?.record?.body || canonical(pending.record.body) !== canonical(c.record.body)) throw new Error("the confirmed agreement differs from my offer");
     if (!isFullySigned(c.record)) throw new Error("the agreement is not signed by all parties");
     const entry = entryHash(c.record);
     const receipt = (await this.register.receipt(entry)) ?? undefined;
@@ -533,7 +601,7 @@ export class Wallet {
       throw new Error(`invalid amount ${amount.value}`);
     }
     if (!within)
-      throw new Error(`amount ${amount.value} ${amount.currency} exceeds the mandate of ${m.body.owner.domain} (${max.value} ${max.currency})`);
+      throw new Error(`amount ${amount.value} ${amount.currency} exceeds the mandate of ${m.body.owner.domain} (${max.value} ${max.currency}): instead of dropping the deal, that agent can pause and ask its owner (sealed form ask_owner)`);
   }
 }
 

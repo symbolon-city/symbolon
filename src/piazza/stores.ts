@@ -1,7 +1,8 @@
 // Storage of the piazza: in memory for tests, Cloudflare D1 in production.
 
 import type { D1Like } from "../server/stores.js";
-import type { PiazzaStore, PiazzaSummary, StoredContact, StoredPost, StoredRemoval, StoredReport } from "./app.js";
+import type { PiazzaStore, PiazzaSummary, StoredContact, StoredMessage, StoredPost, StoredRemoval, StoredReport } from "./app.js";
+import type { BoxKeyClaim } from "../channel.js";
 import type { Tier } from "./guide.js";
 import { inSite } from "./site.js";
 
@@ -98,6 +99,29 @@ export class MemoryPiazzaStore implements PiazzaStore {
       .filter((c) => this.postsById.get(c.postId)?.agent === agent)
       .map((c) => ({ ...c, postTitle: this.postsById.get(c.postId)!.content.title }));
   }
+  async hasContact(postId: string, agent: string) {
+    return this.contacts.some((c) => c.postId === postId && c.fromAgent === agent);
+  }
+  private boxKeys = new Map<string, BoxKeyClaim>();
+  private messages: StoredMessage[] = [];
+  async putBoxKey(agent: string, claim: BoxKeyClaim) {
+    this.boxKeys.set(agent, claim);
+  }
+  async boxKey(agent: string) {
+    return this.boxKeys.get(agent) ?? null;
+  }
+  async addMessage(m: StoredMessage) {
+    this.messages.push(m);
+  }
+  async countMessagesByAgent(agent: string, since: string) {
+    return this.messages.filter((m) => m.fromAgent === agent && m.createdAt >= since).length;
+  }
+  async messagesFor(agent: string, after: { at: string; id: string }, notBefore: string, limit: number) {
+    return this.messages
+      .filter((m) => m.toAgent === agent && (m.createdAt > after.at || (m.createdAt === after.at && m.id > after.id)) && m.createdAt >= notBefore)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt) || a.id.localeCompare(b.id))
+      .slice(0, limit);
+  }
   readonly reports: StoredReport[] = [];
   private removalsList: StoredRemoval[] = [];
   private sealedDocs = new Map<string, number>();
@@ -145,6 +169,10 @@ CREATE TABLE IF NOT EXISTS guide_feedback (at TEXT NOT NULL, tier TEXT NOT NULL,
 CREATE TABLE IF NOT EXISTS reports (post_id TEXT NOT NULL, reason TEXT NOT NULL, text TEXT, tier TEXT NOT NULL, at TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS removals (post_id TEXT PRIMARY KEY, owner TEXT NOT NULL, agent TEXT NOT NULL, removed_at TEXT NOT NULL, reason TEXT NOT NULL, basis TEXT NOT NULL, clause TEXT NOT NULL, rules_version INTEGER NOT NULL, fingerprint TEXT NOT NULL, register_index INTEGER, owner_reply TEXT, correction TEXT);
 CREATE TABLE IF NOT EXISTS sealed_docs (fingerprint TEXT PRIMARY KEY, register_index INTEGER NOT NULL, at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS box_keys (agent TEXT PRIMARY KEY, claim TEXT NOT NULL, updated_at TEXT NOT NULL);
+CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, to_agent TEXT NOT NULL, from_agent TEXT NOT NULL, from_owner TEXT NOT NULL, post_id TEXT NOT NULL, envelope TEXT NOT NULL, created_at TEXT NOT NULL);
+CREATE INDEX IF NOT EXISTS messages_to ON messages (to_agent, created_at);
+CREATE INDEX IF NOT EXISTS messages_from ON messages (from_agent, created_at);
 `;
 
 /** Changes to tables created before them; each may fail harmlessly if already applied. */
@@ -284,6 +312,41 @@ export class D1PiazzaStore implements PiazzaStore {
       reply: x.reply as StoredContact["reply"],
       createdAt: x.created_at,
       postTitle: JSON.parse(x.post_content).title,
+    }));
+  }
+  async hasContact(postId: string, agent: string) {
+    return !!(await this.db.prepare("SELECT 1 AS x FROM contacts WHERE post_id = ? AND from_agent = ?").bind(postId, agent).first<{ x: number }>());
+  }
+  async putBoxKey(agent: string, claim: BoxKeyClaim, at: string) {
+    await this.db.prepare("INSERT OR REPLACE INTO box_keys (agent, claim, updated_at) VALUES (?, ?, ?)").bind(agent, JSON.stringify(claim), at).run();
+  }
+  async boxKey(agent: string) {
+    const r = await this.db.prepare("SELECT claim FROM box_keys WHERE agent = ?").bind(agent).first<{ claim: string }>();
+    return r ? (JSON.parse(r.claim) as BoxKeyClaim) : null;
+  }
+  async addMessage(m: StoredMessage) {
+    await this.db
+      .prepare("INSERT OR IGNORE INTO messages (id, to_agent, from_agent, from_owner, post_id, envelope, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)")
+      .bind(m.id, m.toAgent, m.fromAgent, m.fromOwner, m.postId, JSON.stringify(m.envelope), m.createdAt)
+      .run();
+  }
+  async countMessagesByAgent(agent: string, since: string) {
+    const r = await this.db.prepare("SELECT COUNT(*) AS n FROM messages WHERE from_agent = ? AND created_at >= ?").bind(agent, since).first<{ n: number }>();
+    return r?.n ?? 0;
+  }
+  async messagesFor(agent: string, after: { at: string; id: string }, notBefore: string, limit: number) {
+    const r = await this.db
+      .prepare("SELECT * FROM messages WHERE to_agent = ? AND (created_at > ? OR (created_at = ? AND id > ?)) AND created_at >= ? ORDER BY created_at, id LIMIT ?")
+      .bind(agent, after.at, after.at, after.id, notBefore, limit)
+      .all<{ id: string; to_agent: string; from_agent: string; from_owner: string; post_id: string; envelope: string; created_at: string }>();
+    return r.results.map((x) => ({
+      id: x.id,
+      toAgent: x.to_agent,
+      fromAgent: x.from_agent,
+      fromOwner: x.from_owner,
+      postId: x.post_id,
+      envelope: JSON.parse(x.envelope),
+      createdAt: x.created_at,
     }));
   }
   async summary(now: string, siteOf?: (d: string) => string): Promise<PiazzaSummary> {
