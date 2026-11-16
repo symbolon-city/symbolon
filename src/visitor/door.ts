@@ -10,6 +10,7 @@ import { z } from "zod";
 import type { BlockProvider } from "../anchor.js";
 import { checkMandate } from "../counterparty.js";
 import type { Mandate } from "../mandate.js";
+import { newChallenge, possessionProblem } from "../possession.js";
 import { verifyProof, type ProofBundle } from "../proof.js";
 import { revocationProblem, type Revocation } from "../revocation.js";
 import type { OwnerResolver } from "../wellknown.js";
@@ -114,6 +115,40 @@ export function buildVisitorServer(deps: DoorDeps): McpServer {
     },
     ({ mandate }) =>
       run(() => checkMandate(mandate as unknown as Mandate, { ownerResolver: deps.ownerResolver, revocations: (s, k) => deps.register.revocations(s, k), now: now() })),
+  );
+
+  server.registerTool(
+    "symbolon_new_challenge",
+    {
+      title: "Make a challenge to prove a key",
+      description:
+        "Mandates are public and can be copied: checking one does not prove that the agent showing it holds its key. This returns a fresh random challenge. " +
+        "Send it to the other agent; its Symbolon wallet answers with symbolon_answer_challenge; then check the answer with symbolon_check_possession. Keep the challenge. Read-only.",
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    () => run(() => newChallenge(now())),
+  );
+
+  server.registerTool(
+    "symbolon_check_possession",
+    {
+      title: "Check a proof of key",
+      description:
+        "Checks another agent's answer to your challenge: signed with the key named in its mandate, for that challenge and mandate, within 5 minutes. " +
+        "It proves the agent holds the key; it does not check the mandate itself (use symbolon_check_counterparty). Read-only.",
+      inputSchema: {
+        mandate: jsonObject.describe("The mandate the other agent showed you"),
+        answer: jsonObject.describe("The other agent's answer"),
+        challenge: z.string().regex(/^[0-9a-f]{64}$/).describe("The challenge you sent"),
+        for: z.string().regex(/^ed25519:[0-9a-f]{64}$/).optional().describe("Your own agent key, if you gave it to the other agent: then the answer must name it"),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    ({ mandate, answer, challenge, for: forKey }) =>
+      run(() => {
+        const problem = possessionProblem(mandate as unknown as Mandate, answer, challenge, { ...(forKey ? { for: forKey } : {}), now: now() });
+        return problem ? { ok: false, problem } : { ok: true };
+      }),
   );
 
   server.registerTool(

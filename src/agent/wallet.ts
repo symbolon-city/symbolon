@@ -14,6 +14,7 @@ import type { Receipt } from "../register.js";
 import type { OwnerResolver } from "../wellknown.js";
 import type { RegisterClient } from "./client.js";
 import { checkMandate, type CounterpartyCheck } from "../counterparty.js";
+import { answerChallenge, newChallenge, possessionProblem, type PossessionAnswer } from "../possession.js";
 import { revocationsOf, signersOf, subjectsOf } from "../revocation.js";
 import { signEnvelope, type Action, type Envelope } from "../piazza/messages.js";
 
@@ -147,6 +148,30 @@ export class Wallet {
     const r = await this.register.revocations(subjectsOf(m), signersOf(m, keys)).catch(() => []);
     const hit = revocationsOf(m, r, keys)[0];
     if (hit) throw new Error(`${whose} mandate was revoked on ${hit.time}${hit.revocation.body.reason ? ` (${hit.revocation.body.reason})` : ""}`);
+  }
+
+  /**
+   * Proof of possession, step 1 (checker): a fresh random challenge to send to the other agent, together
+   * with this agent's key so the answer can name who asked.
+   */
+  newChallenge(): { challenge: string; expiresAt: string; for: PublicKey } {
+    const c = newChallenge(this.now());
+    return { challenge: c.challenge, expiresAt: c.expiresAt, for: this.key.publicKey };
+  }
+
+  /** Proof of possession, step 2 (the other agent): signs the checker's challenge with this agent's key. */
+  answerChallenge(challenge: string, forKey?: PublicKey): PossessionAnswer {
+    return answerChallenge(this.key, this.myMandate(), challenge, { ...(forKey ? { for: forKey } : {}), now: this.now() });
+  }
+
+  /**
+   * Proof of possession, step 3 (checker): does the agent in front of me hold the key of the mandate it
+   * showed? The answer must be addressed to this agent (its `for`), so it cannot be borrowed from a
+   * conversation with someone else.
+   */
+  checkPossession(mandate: Mandate, answer: unknown, challenge: string): { ok: boolean; problem?: string } {
+    const problem = possessionProblem(mandate, answer, challenge, { for: this.key.publicKey, now: this.now() });
+    return problem ? { ok: false, problem } : { ok: true };
   }
 
   /**

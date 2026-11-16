@@ -271,3 +271,15 @@ test("limits A5: the daily counter can be kept outside the process", async () =>
   asTask(mk().newTask({ instruction: "b", principalId: "p" }));
   assert.throws(() => mk().newTask({ instruction: "c", principalId: "p" }), /daily limit/, "a restart (new Operator) does not reset the count");
 });
+
+test("proof of possession through the wallets: the task agent proves its key to the agency", async () => {
+  const c = await city();
+  const task = asTask(c.operator.newTask({ instruction: "x", principalId: "p", total: EUR("50.00") }));
+  const agent = await c.taskWallet(task);
+  const ch = c.agency.newChallenge();
+  const answer = agent.answerChallenge(ch.challenge, ch.for);
+  assert.deepEqual(c.agency.checkPossession(task.mandate, answer, ch.challenge), { ok: true });
+  // An answer addressed to someone else is not accepted by the agency.
+  const elsewhere = agent.answerChallenge(ch.challenge, generateKeyPair().publicKey);
+  assert.equal(c.agency.checkPossession(task.mandate, elsewhere, ch.challenge).ok, false);
+});

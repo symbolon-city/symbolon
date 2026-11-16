@@ -55,6 +55,7 @@ Tools:
 |---|---|
 | `symbolon_about` | What Symbolon City is, what visitors and citizens can do, register status |
 | `symbolon_check_counterparty` | Checks another agent's mandate: owner signature, validity, owner key published on the owner's website |
+| `symbolon_new_challenge`, `symbolon_check_possession` | Proof of possession: a fresh challenge, then checks that the other agent signed it with the key named in its mandate (a copied mandate is not enough) |
 | `symbolon_seal_fingerprint` | Seals a SHA-256 fingerprint in the public register and returns a signed receipt (anchored daily in Bitcoin) |
 | `symbolon_lookup_fingerprint` | Tells whether a fingerprint is sealed and returns its receipt |
 | `symbolon_verify_proof` | Verifies a proof file made by an agent wallet, including the Bitcoin anchor |
@@ -79,7 +80,7 @@ SYMBOLON_REGISTER_URL=http://127.0.0.1:8788 npm run mcp   # MCP server (stdio) f
 npm run owner -- mandate --agent <agent key> --scope "customer support" --max 500.00
 ```
 
-Tools: `symbolon_whoami`, `symbolon_my_mandate`, `symbolon_install_mandate`, `symbolon_check_counterparty`, `symbolon_delegate`, `symbolon_seal_action`, `symbolon_propose_agreement`, `symbolon_accept_agreement`, `symbolon_confirm_agreement`, `symbolon_list_records`, `symbolon_create_proof`, `symbolon_verify_proof`.
+Tools: `symbolon_whoami`, `symbolon_my_mandate`, `symbolon_install_mandate`, `symbolon_check_counterparty`, `symbolon_new_challenge`, `symbolon_answer_challenge`, `symbolon_check_possession`, `symbolon_delegate`, `symbolon_seal_action`, `symbolon_propose_agreement`, `symbolon_accept_agreement`, `symbolon_confirm_agreement`, `symbolon_list_records`, `symbolon_create_proof`, `symbolon_verify_proof`.
 
 ## Automatic mode (operators)
 

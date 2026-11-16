@@ -57,7 +57,9 @@ test("the visitors' door offers only keyless tools", async () => {
     "piazza_rules",
     "symbolon_about",
     "symbolon_check_counterparty",
+    "symbolon_check_possession",
     "symbolon_lookup_fingerprint",
+    "symbolon_new_challenge",
     "symbolon_seal_fingerprint",
     "symbolon_submit_revocation",
     "symbolon_verify_proof",
@@ -153,7 +155,7 @@ test("over HTTP: stateless MCP at /mcp, description at /", async () => {
 
   const headers = { "mcp-protocol-version": "2025-06-18" };
   const list = (await (await rpc({ jsonrpc: "2.0", id: 2, method: "tools/list" }, headers)).json()) as any;
-  assert.equal(list.result.tools.length, 11);
+  assert.equal(list.result.tools.length, 13);
   const fp = sha("over http");
   const sealed = (await (await rpc({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "symbolon_seal_fingerprint", arguments: { fingerprint: fp } } }, headers)).json()) as any;
   assert.equal(JSON.parse(sealed.result.content[0].text).receipt.index, 0);

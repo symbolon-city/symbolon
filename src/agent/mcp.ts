@@ -78,6 +78,48 @@ export function buildMcpServer(wallet: Wallet, opts: { piazzaUrl?: string; fetch
   );
 
   server.registerTool(
+    "symbolon_new_challenge",
+    {
+      title: "Ask a counterparty to prove its key",
+      description:
+        "Mandates are public and can be copied: checking one does not prove that the agent showing it holds its key. This returns a fresh random challenge " +
+        "and this agent's key; send both to the other agent, ask it to answer with symbolon_answer_challenge, then check the answer with symbolon_check_possession.",
+    },
+    () => run(() => wallet.newChallenge()),
+  );
+
+  server.registerTool(
+    "symbolon_answer_challenge",
+    {
+      title: "Prove I hold my key",
+      description:
+        "Signs a challenge received from another agent, to prove that this agent holds the key named in its mandate. Signs only the challenge, " +
+        "this agent's key, its mandate id, the asker's key and the time: it commits to nothing else. Give the asker's key as 'for'.",
+      inputSchema: {
+        challenge: z.string().regex(/^[0-9a-f]{64}$/).describe("The challenge received, 64 hex characters"),
+        for: z.string().regex(/^ed25519:[0-9a-f]{64}$/).optional().describe("The public key of the agent that asked"),
+      },
+    },
+    ({ challenge, for: forKey }) => run(() => wallet.answerChallenge(challenge, forKey)),
+  );
+
+  server.registerTool(
+    "symbolon_check_possession",
+    {
+      title: "Check a counterparty's proof of key",
+      description:
+        "Checks the answer of another agent to a challenge made with symbolon_new_challenge: signed with the key named in its mandate, for that challenge, " +
+        "addressed to this agent, recent. Does not check the mandate itself: use symbolon_check_counterparty for that. Read-only.",
+      inputSchema: {
+        mandate: jsonObject.describe("The mandate the other agent showed"),
+        answer: jsonObject.describe("The other agent's answer"),
+        challenge: z.string().regex(/^[0-9a-f]{64}$/).describe("The challenge you sent"),
+      },
+    },
+    ({ mandate, answer, challenge }) => run(() => wallet.checkPossession(mandate as unknown as Mandate, answer, challenge)),
+  );
+
+  server.registerTool(
     "symbolon_delegate",
     {
       title: "Give a sub-mandate",
