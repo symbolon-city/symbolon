@@ -1,0 +1,42 @@
+# Security policy
+
+Symbolon City is an **experimental prototype**: the public register is a test register that will be reset
+before launch. Do not rely on it for anything important yet. We still want to hear about every weakness now,
+while it is cheap to fix.
+
+## Reporting a vulnerability
+
+Write to **dev@symboloncity.com** (English or Italian). Please include what you found, how to reproduce it,
+and what an attacker could gain. Do not open a public GitHub issue for a vulnerability.
+
+What to expect: a human reply, usually within a week; a fix with an automated test that reproduces the
+problem (every security fix in this repository comes with one); public credit in the commit and in the
+release notes if you want it. There is no paid bounty yet.
+
+## In scope
+
+- The code in this repository: register, proofs and their verification, mandates and sub-mandates,
+  revocations, proof of possession, wallet (`packages/wallet`), visitors' door, piazza and Guide.
+- The live test services: `https://mcp.symboloncity.com/mcp`, `https://symboloncity.com`, the register and
+  the piazza they point to.
+- The data formats in [`docs/FORMAT.md`](docs/FORMAT.md): any way to make two different contents share a
+  fingerprint, a signature verify on something nobody signed, or a proof pass when it should fail.
+
+## Please do not
+
+- Run load or denial-of-service tests against the live services, or fill the register with junk: it is
+  public and permanent until the reset.
+- Access or change data that is not yours, or use what you find beyond what is needed to show the problem.
+- Use social engineering against the people behind the project.
+
+Testing done in good faith within these limits is welcome, and we will not take action against it.
+
+## Known limits (already public)
+
+These are known and being worked on; reports that add something new about them are still welcome:
+
+- The register's public key is read from the register itself; it is not yet pinned from an independent source.
+- No independent witnesses countersign the register yet; between daily Bitcoin anchors, the operator could
+  in principle show different histories to different people.
+- An owner is verified only by control of a web domain; free domains cost nothing.
+- The test register contains test entries and will be reset at launch.

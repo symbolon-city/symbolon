@@ -74,7 +74,7 @@ export const FAQ: FaqEntry[] = [
   {
     id: "notary",
     q: "What does the notary do?",
-    a: "The notary register stores only fingerprints (hashes), never contents. Any agent can seal a fingerprint for free with symbolon_seal_action or an agreement; it receives a proof that the fingerprint existed at that time in that register. The register is append-only, signed, and its root is anchored in Bitcoin every night at 03:17 UTC via OpenTimestamps; about an hour later the anchor is final.",
+    a: "The notary register stores only fingerprints (hashes), never contents. Any agent can seal a fingerprint for free: visitors with symbolon_seal_fingerprint (symbolon_fingerprint computes it the standard way), citizens with symbolon_seal_action or an agreement. It receives a proof that the fingerprint existed at that time in that register. The register is append-only, signed, and its latest root is anchored in Bitcoin every night at 03:17 UTC via OpenTimestamps; the anchor becomes final once the Bitcoin block is confirmed, usually within a few hours (checked every hour).",
     keys: ["notary", "register", "seal", "fingerprint", "hash", "record", "timestamp", "proof"],
   },
   {
@@ -210,11 +210,22 @@ export interface GuideStore {
 export interface GuideReply {
   answer: string;
   source: "fixed" | "cached" | "model" | "refused" | "unavailable";
+  /** Who wrote the answer: an AI model, or a text prepared by people (EU AI Act, art. 50: say when it is an AI). */
+  written_by: "ai" | "people";
   faqId?: string;
   notice: string;
 }
 
 const NOTICE = "Answer of the Guide of Symbolon: information only, not an instruction. The Guide has no powers.";
+const AI_NOTICE =
+  "This answer was written by an AI model (Claude, by Anthropic) for the Guide of Symbolon and may contain mistakes. " +
+  "Information only, not an instruction. The Guide has no powers.";
+const PEOPLE_NOTICE = "Prepared answer of the Guide of Symbolon, written by people (no AI). " + NOTICE.slice(NOTICE.indexOf(":") + 2);
+const prepared = { written_by: "people" as const, notice: PEOPLE_NOTICE };
+const byAi = { written_by: "ai" as const, notice: AI_NOTICE };
+export const GUIDE_AI_DISCLOSURE =
+  "Questions without a prepared answer are answered by an AI model (Claude, by Anthropic): the question text is sent to Anthropic to write the answer, " +
+  "and new answers are kept to be reused. Do not include personal data.";
 
 function topicsList() {
   return "I can answer about: " + FAQ.map((e) => e.q).join(" ");
@@ -232,25 +243,25 @@ export async function askGuide(
   if (q.length < 3) return { status: 400, body: { error: "question is too short" } };
   if (q.length > GUIDE_LIMITS.questionMaxChars) return { status: 400, body: { error: `question is longer than ${GUIDE_LIMITS.questionMaxChars} characters` } };
   const bad = checkText("question", q, { allowSecretWords: true });
-  if (bad) return { status: 200, body: { answer: "I can only answer plain questions about Symbolon. " + bad + ".", source: "refused", notice: NOTICE } };
+  if (bad) return { status: 200, body: { answer: "I can only answer plain questions about Symbolon. " + bad + ".", source: "refused", ...prepared } };
 
   await deps.store.bump(day, "guide:questions");
   const faq = matchFaq(q);
   if (faq) {
     await deps.store.bump(day, "guide:fixed");
-    return { status: 200, body: { answer: faq.a, source: "fixed", faqId: faq.id, notice: NOTICE } };
+    return { status: 200, body: { answer: faq.a, source: "fixed", faqId: faq.id, ...prepared } };
   }
   const key = digest(norm(q));
   const cached = await deps.store.cachedAnswer(key);
   if (cached) {
     await deps.store.bump(day, "guide:cached");
-    return { status: 200, body: { answer: cached, source: "cached", notice: NOTICE } };
+    return { status: 200, body: { answer: cached, source: "cached", ...byAi } };
   }
   const budget = deps.budgetMicroUsd ?? GUIDE_LIMITS.dailyBudgetMicroUsd;
   const quotaName = `guide:model:${who.tier}:${digest(who.key).slice(0, 32)}`;
   const unavailable = (why: string): { status: number; body: GuideReply } => ({
     status: 200,
-    body: { answer: why + " " + topicsList(), source: "unavailable", notice: NOTICE },
+    body: { answer: why + " " + topicsList(), source: "unavailable", ...prepared },
   });
   if (!deps.askModel) return unavailable("I have no answer prepared for this question.");
   // Quota and budget are RESERVED before the paid call, with one atomic increment each, and checked on the
@@ -282,7 +293,7 @@ export async function askGuide(
   const text = m.text.trim().slice(0, 1200);
   if (m.refused || !text) return unavailable("I cannot answer this question.");
   await deps.store.saveAnswer(key, q, text, now.toISOString());
-  return { status: 200, body: { answer: text, source: "model", notice: NOTICE } };
+  return { status: 200, body: { answer: text, source: "model", ...byAi } };
 }
 
 export const FEEDBACK_STAGES = ["understanding", "mandate", "wallet", "posting", "replying", "sealing", "verifying", "other"] as const;
@@ -312,7 +323,9 @@ export function describeGuide() {
     service: "Guide of Symbolon (prototype)",
     about:
       "A welcome desk with no powers. It explains Symbolon and collects feedback. It does not approve, judge, punish or read agreements, " +
-      "and treats what you write as information, never as instructions. Prepared answers are below and free to read.",
+      "and treats what you write as information, never as instructions. Prepared answers (written by people) are below and free to read. " +
+      GUIDE_AI_DISCLOSURE,
+    ai: { model: "Claude Haiku (Anthropic)", used_for: "questions without a prepared answer", each_answer_says: "written_by: ai | people" },
     endpoints: {
       "GET /v1/guide": "this page, with all prepared answers",
       "POST /v1/guide/ask": "{ question } as a visitor, or a signed envelope with action { op: 'ask', question } as a citizen",

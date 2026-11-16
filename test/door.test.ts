@@ -182,6 +182,14 @@ test("over HTTP: stateless MCP at /mcp, description at /", async () => {
   assert.equal(JSON.parse(sealed.result.content[0].text).receipt.index, 0);
 
   assert.equal((await handleDoor(new Request(base + "/mcp"), deps)).status, 405);
+  const sec = await handleDoor(new Request(base + "/.well-known/security.txt"), deps);
+  assert.equal(sec.status, 200);
+  const secText = await sec.text();
+  assert.match(secText, /^Contact: mailto:/m);
+  assert.match(secText, /^Policy: https:\/\/github\.com\/symbolon-city\/symbolon\/blob\/main\/SECURITY\.md$/m);
+  const expires = Date.parse(/^Expires: (.+)$/m.exec(secText)![1]);
+  assert.ok(expires - Date.now() > 30 * 86_400_000, "security.txt expires within a month: renew SECURITY_TXT_EXPIRES in src/visitor/door.ts");
+  assert.ok(expires - Date.now() < 366 * 86_400_000, "RFC 9116: Expires less than a year ahead");
   const page = (await (await handleDoor(new Request(base + "/"), deps)).json()) as any;
   assert.equal(page.mcp.url, base + "/mcp");
   const llms = await handleDoor(new Request(base + "/llms.txt"), deps);
@@ -212,5 +220,8 @@ test("people get a home page with the line to connect, agents keep the JSON", as
   assert.match(html, /claude mcp add --transport http symbolon/);
   assert.doesNotMatch(html, /<script[^>]+src=/, "no scripts from elsewhere");
   const json = (await (await handleDoor(new Request("https://symboloncity.com/"), deps)).json()) as any;
-  assert.equal(json.mcp.url, "https://symboloncity.com/mcp");
+  assert.equal(json.mcp.url, "https://mcp.symboloncity.com/mcp", "one public address for the door, everywhere");
+  const llms = await (await handleDoor(new Request("https://symboloncity.com/llms.txt"), deps)).text();
+  assert.match(llms, /\(https:\/\/mcp\.symboloncity\.com\/mcp\)/);
+  assert.doesNotMatch(llms, /https:\/\/symboloncity\.com\/mcp/);
 });

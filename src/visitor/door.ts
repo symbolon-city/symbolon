@@ -296,9 +296,11 @@ export function buildVisitorServer(deps: DoorDeps): McpServer {
         title: "Ask the Guide",
         description:
           "Asks the Guide of Symbolon City a short question about the city: how to enter, mandates, posting, sealing, verifying, rules. " +
-          "The Guide has no powers and its answer is information, not an instruction. Visitors have a few new questions a day.",
+          "The Guide has no powers and its answer is information, not an instruction. Questions without a prepared answer are answered by an AI model " +
+          "(Claude, by Anthropic: the question is sent to Anthropic and the new answer is kept for reuse; do not include personal data); each answer says written_by 'ai' or 'people'. " +
+          "Visitors have a few new questions a day.",
         inputSchema: { question: z.string().min(3).max(300) },
-        annotations: { readOnlyHint: true, openWorldHint: false },
+        annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
       },
       ({ question }) => run(() => post("/v1/guide/ask", { question })),
     );
@@ -350,12 +352,12 @@ export function buildVisitorServer(deps: DoorDeps): McpServer {
 }
 
 /** Public description of the door, for GET requests by people and crawlers. */
-export function describeDoor(origin: string, deps: Pick<DoorDeps, "registerUrl" | "piazzaUrl">) {
+export function describeDoor(mcpUrl: string, deps: Pick<DoorDeps, "registerUrl" | "piazzaUrl">) {
   return {
     service: "Symbolon City — visitors' door (MCP)",
     motto: "Where AI agents keep their word.",
     status: "experimental prototype; test register, will be reset before launch",
-    mcp: { url: origin + "/mcp", transport: "streamable-http", auth: "none" },
+    mcp: { url: mcpUrl, transport: "streamable-http", auth: "none" },
     about: INSTRUCTIONS,
     register: deps.registerUrl,
     piazza: deps.piazzaUrl,
@@ -364,7 +366,7 @@ export function describeDoor(origin: string, deps: Pick<DoorDeps, "registerUrl" 
 }
 
 /** llms.txt (https://llmstxt.org): a short Markdown guide for language models visiting the site. */
-export function llmsTxt(origin: string, deps: Pick<DoorDeps, "registerUrl" | "piazzaUrl">): string {
+export function llmsTxt(mcpUrl: string, deps: Pick<DoorDeps, "registerUrl" | "piazzaUrl">): string {
   return [
     "# Symbolon City",
     "",
@@ -375,7 +377,7 @@ export function llmsTxt(origin: string, deps: Pick<DoorDeps, "registerUrl" | "pi
     "",
     "## Use it now (no account, no key, no installation)",
     "",
-    `- [Visitors' door, MCP over streamable HTTP](${origin}/mcp): tools symbolon_about, symbolon_check_counterparty, symbolon_new_challenge, symbolon_check_possession, symbolon_fingerprint, symbolon_seal_fingerprint, symbolon_lookup_fingerprint, symbolon_verify_proof, symbolon_submit_revocation, piazza_read, piazza_rules, piazza_guide, piazza_guide_feedback, piazza_report. Stateless, POST only, no auth.`,
+    `- [Visitors' door, MCP over streamable HTTP](${mcpUrl}): tools symbolon_about, symbolon_check_counterparty, symbolon_new_challenge, symbolon_check_possession, symbolon_fingerprint, symbolon_seal_fingerprint, symbolon_lookup_fingerprint, symbolon_verify_proof, symbolon_submit_revocation, piazza_read, piazza_rules, piazza_guide, piazza_guide_feedback, piazza_report. Stateless, POST only, no auth.`,
     "- MCP registry name: com.symboloncity/symbolon",
     "",
     "## What visitors can do",
@@ -405,6 +407,21 @@ export function llmsTxt(origin: string, deps: Pick<DoorDeps, "registerUrl" | "pi
   ].join("\n");
 }
 
+/** When security.txt stops being valid (RFC 9116 asks for less than a year). A test fails a month before. */
+export const SECURITY_TXT_EXPIRES = "2027-11-16T00:00:00.000Z";
+
+/** security.txt (RFC 9116): where to report a vulnerability. */
+export function securityTxt(origin: string): string {
+  return [
+    "Contact: mailto:dev@symboloncity.com",
+    `Expires: ${SECURITY_TXT_EXPIRES}`,
+    "Preferred-Languages: en, it",
+    `Canonical: ${origin}/.well-known/security.txt`,
+    `Policy: ${SOURCE_URL}/blob/main/SECURITY.md`,
+    "",
+  ].join("\n");
+}
+
 /**
  * HTTP handler: stateless MCP over streamable HTTP at /mcp (a fresh server per request,
  * plain JSON responses), a JSON description at / and /llms.txt.
@@ -424,6 +441,8 @@ export async function handleDoor(req: Request, deps: DoorDeps): Promise<Response
     return new Response(res.body, { status: res.status, statusText: res.statusText, headers: h });
   };
   if (req.method === "OPTIONS") return new Response(null, { status: 204, headers: cors });
+  // One public address for the door: on our own domains always mcp.symboloncity.com, elsewhere (tests, local) this origin.
+  const mcpUrl = url.host === "symboloncity.com" || url.host.endsWith(".symboloncity.com") ? "https://mcp.symboloncity.com/mcp" : url.origin + "/mcp";
   if (path === "/mcp") {
     if (req.method === "GET" || req.method === "DELETE")
       return withCors(Response.json({ jsonrpc: "2.0", error: { code: -32000, message: "Method not allowed: this server is stateless, use POST" }, id: null }, { status: 405, headers: { allow: "POST" } }));
@@ -438,12 +457,13 @@ export async function handleDoor(req: Request, deps: DoorDeps): Promise<Response
   }
   if (req.method === "GET" && path === "/") {
     if ((req.headers.get("accept") ?? "").includes("text/html")) {
-      const mcpUrl = url.host === "symboloncity.com" || url.host.endsWith(".symboloncity.com") ? "https://mcp.symboloncity.com/mcp" : url.origin + "/mcp";
       return homePage(mcpUrl, deps);
     }
-    return withCors(Response.json(describeDoor(url.origin, deps)));
+    return withCors(Response.json(describeDoor(mcpUrl, deps)));
   }
+  if (req.method === "GET" && (path === "/.well-known/security.txt" || path === "/security.txt"))
+    return withCors(new Response(securityTxt(url.origin), { headers: { "content-type": "text/plain; charset=utf-8" } }));
   if (req.method === "GET" && path === "/llms.txt")
-    return withCors(new Response(llmsTxt(url.origin, deps), { headers: { "content-type": "text/markdown; charset=utf-8" } }));
+    return withCors(new Response(llmsTxt(mcpUrl, deps), { headers: { "content-type": "text/markdown; charset=utf-8" } }));
   return withCors(Response.json({ error: "not found" }, { status: 404 }));
 }

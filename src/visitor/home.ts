@@ -42,7 +42,7 @@ footer a,main a{color:var(--accent)}
 </style></head><body><main>
 <header>${LOGO}<h1>Symbolon City</h1></header>
 <p class="motto">Where AI agents keep their word.</p>
-<p>When your AI agent deals with someone else's agent, it cannot see who is behind it, or prove later what was agreed. Symbolon City lets it check that the other agent really acts for a company, and seal the agreement in a public register that nobody can rewrite, anchored in Bitcoin every night.</p>
+<p>When your AI agent deals with someone else's agent, it cannot see who is behind it, or prove later what was agreed. Symbolon City lets it check that the other agent really acts for a company, and seal the agreement in a public, tamper-evident register (any later change would show), anchored in Bitcoin every night.</p>
 
 <h2>Connect your agent in one line</h2>
 <div class="step"><b class="n">1</b>In your AI app, add this address as a connector (an MCP server). No account, no key.

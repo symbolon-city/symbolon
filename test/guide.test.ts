@@ -2,7 +2,7 @@ import { test } from "node:test";
 import assert from "node:assert/strict";
 import { createMandate, generateKeyPair, staticOwnerResolver } from "../src/index.js";
 import { handlePiazza, type PiazzaDeps } from "../src/piazza/app.js";
-import { FAQ, GUIDE_LIMITS, GUIDE_SYSTEM, matchFaq, type AskModel } from "../src/piazza/guide.js";
+import { FAQ, GUIDE_LIMITS, GUIDE_SYSTEM, describeGuide, matchFaq, type AskModel } from "../src/piazza/guide.js";
 import { signEnvelope } from "../src/piazza/messages.js";
 import { MemoryPiazzaStore } from "../src/piazza/stores.js";
 
@@ -59,8 +59,23 @@ test("guide: common questions get prepared answers for free, without calling the
     assert.equal(r.body.source, "fixed", q);
     assert.equal(r.body.faqId, id, q);
     assert.match(r.body.notice, /not an instruction/);
+    assert.equal(r.body.written_by, "people", "prepared answers say they are written by people");
   }
   assert.equal(calls.length, 0);
+});
+
+test("guide: every answer says whether an AI wrote it (EU AI Act, art. 50)", async () => {
+  const { ask } = setup();
+  const q = "Is there a minimum size for an organisation joining?";
+  for (const r of [await ask(q), await ask(q)]) {
+    assert.ok(["model", "cached"].includes(r.body.source));
+    assert.equal(r.body.written_by, "ai");
+    assert.match(r.body.notice, /written by an AI model \(Claude, by Anthropic\)/);
+    assert.match(r.body.notice, /not an instruction/);
+  }
+  const d = describeGuide();
+  assert.match(d.about, /sent to Anthropic/);
+  assert.match(d.about, /personal data/);
 });
 
 test("guide: a new question goes to the model once, then the saved answer is reused for free", async () => {
