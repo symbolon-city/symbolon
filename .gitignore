@@ -6,3 +6,4 @@ dist/
 packages/wallet/dist/
 packages/wallet/LICENSE
 packages/wallet/*.tgz
+register-copy.json

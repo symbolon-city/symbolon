@@ -38,6 +38,7 @@ These are known and being worked on; reports that add something new about them a
 - The register's public key is pinned in the code and the npm package (`src/known-registers.ts`); it is not yet
   also published through a second channel (for example a DNS record).
 - No independent witnesses countersign the register yet; between daily Bitcoin anchors, the operator could
-  in principle show different histories to different people.
+  in principle show different histories to different people. Anyone can already keep a checked copy of every
+  entry (`npm run register:copy`), which shows a rewritten history after the fact.
 - An owner is verified only by control of a web domain; free domains cost nothing.
 - The test register contains test entries and will be reset at launch.

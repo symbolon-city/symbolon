@@ -20,7 +20,8 @@
     "build:wallet": "tsx scripts/build-wallet.ts",
     "demo:check": "tsx scripts/demo-proof-check.ts",
     "piazza:remove": "tsx scripts/piazza-remove.ts",
-    "format:vectors": "tsx scripts/format-vectors.ts"
+    "format:vectors": "tsx scripts/format-vectors.ts",
+    "register:copy": "tsx scripts/register-copy.ts"
   },
   "license": "Apache-2.0",
   "dependencies": {

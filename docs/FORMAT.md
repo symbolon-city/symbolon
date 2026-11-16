@@ -113,6 +113,10 @@ An append-only Merkle log (RFC 9162, Certificate Transparency v2) that sees only
 - **Signed tree head** = `{"log", "size", "root", "time"}` signed by the register key (section 3);
   `log` is the register's public key. A receipt is `{entry, index, head, path}`.
 - Each day the latest head is anchored in Bitcoin through OpenTimestamps.
+- **Public list of entries:** `GET /v1/entries?from=<index>` returns every entry in order (1000 per page, `next`
+  for the following page) with the latest signed head. Anyone can keep a full copy: the leaves of the first
+  `head.size` entries must give `head.root`, and an older copy must be the beginning of a newer one
+  (`npm run register:copy` does both checks).
 - Revocation id = fingerprint of the canonical revocation `body`.
 
 > **Pin the register's key.** Never take it from the register's own answer alone: whoever controls the address

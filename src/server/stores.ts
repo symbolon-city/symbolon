@@ -158,6 +158,10 @@ export class D1Store implements LogStore, ExtrasStore {
     const r = await this.db.prepare("SELECT idx FROM leaves WHERE entry = ? ORDER BY idx LIMIT 1").bind(entry).first<{ idx: number }>();
     return r ? r.idx : null;
   }
+  async entries(from: number, limit: number) {
+    const r = await this.db.prepare("SELECT entry FROM leaves WHERE idx >= ? ORDER BY idx LIMIT ?").bind(from, limit).all<{ entry: string }>();
+    return r.results.map((x) => x.entry);
+  }
 
   async putAnchor(size: number, anchor: Anchor, state: AnchorState) {
     await this.db

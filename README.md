@@ -131,7 +131,11 @@ echo "REGISTER_SECRET_KEY=$(openssl rand -hex 32)" > .dev.vars
 npx wrangler dev --local --test-scheduled
 ```
 
-On Cloudflare (needs an account): `wrangler d1 create symbolon-register`, put the id in `wrangler.toml`, `wrangler secret put REGISTER_SECRET_KEY`, `wrangler deploy`.
+On Cloudflare (needs an account): `wrangler d1 create symbolon-register`, put the id in `wrangler.toml`, `wrangler secret put REGISTER_SECRET_KEY`, `wrangler deploy`. A new register needs its public key added to `src/known-registers.ts`, so that wallets and verifiers pin it.
+
+## Keeping your own copy of the register
+
+Every entry is public, in order, at `GET /v1/entries?from=<index>` (1000 per page). `npm run register:copy -- [register url] [file]` downloads them all, checks them against the head signed by the register's pinned key, and saves the copy; run it again later with the same file and it tells whether anything was rewritten in between (an older copy must be the beginning of a newer one). Anyone can do this, without asking us.
 
 ## Not done yet
 

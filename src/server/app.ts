@@ -36,6 +36,8 @@ const KEY = /^ed25519:[0-9a-f]{64}$/;
 const MAX_BODY = 8192;
 /** Revocations per page of GET /v1/revocations; `next` gives the following page. */
 export const REVOCATIONS_PAGE = 100;
+/** Entries per page of the public list (GET /v1/entries). */
+export const ENTRIES_PAGE = 1000;
 
 const CORS = {
   "access-control-allow-origin": "*",
@@ -87,6 +89,7 @@ export function describe(deps: AppDeps) {
     endpoints: {
       "POST /v1/entries": "body {entry: <sha256 hex>} → receipt with index, signed tree head and inclusion path",
       "GET /v1/entries/{entry}": "receipt for an existing entry, against the latest head",
+      "GET /v1/entries?from={index}&limit={n}": `the public list of all entries in order (${ENTRIES_PAGE} per page, "next" for the following page), with the latest signed head, so that anyone can keep and check a full copy`,
       "GET /v1/head": "latest signed tree head",
       "GET /v1/heads/{size}": "signed tree head at a given size",
       "GET /v1/consistency?from={m}&to={n}": "proof that head n extends head m",
@@ -199,6 +202,26 @@ async function route(req: Request, deps: AppDeps): Promise<Response> {
         revocations,
         ...(more ? { next: revocations[revocations.length - 1].index } : {}),
         note: "Apply a revocation only if it is signed by the mandate's owner key, a key published at the owner's domain, or (for its own mandate or key) the agent. It applies from its register position. If next is present there are more: ask again with after=next.",
+      });
+    }
+
+    if (req.method === "GET" && path === "/v1/entries") {
+      // The public list of every fingerprint, in order, so that anyone can keep a full copy and check it
+      // against a signed head (recompute the leaves and the root: docs/FORMAT.md, section 7).
+      const fromParam = url.searchParams.get("from");
+      const from = fromParam === null ? 0 : intParam(fromParam, "from");
+      const limitParam = url.searchParams.get("limit");
+      const limit = Math.min(limitParam === null ? ENTRIES_PAGE : Math.max(1, intParam(limitParam, "limit")), ENTRIES_PAGE);
+      const head = await register.latestHead();
+      const size = head?.size ?? 0;
+      const entries = from >= size ? [] : await register.store.entries(from, Math.min(limit, size - from));
+      return json({
+        from,
+        entries,
+        size,
+        head,
+        ...(from + entries.length < size ? { next: from + entries.length } : {}),
+        note: "Every entry, in register order. To keep a copy, ask again with from=next until it is absent; then check that the leaves of the first head.size entries give head.root, and that head is signed by the register's key.",
       });
     }
 

@@ -51,6 +51,8 @@ export interface LogStore {
   putHead(head: SignedTreeHead): Promise<void>;
   head(size: number): Promise<SignedTreeHead | null>;
   indexOf(entry: string): Promise<number | null>;
+  /** Entries (fingerprints) from position `from`, in order, at most `limit`: the public list anyone can copy. */
+  entries(from: number, limit: number): Promise<string[]>;
 }
 
 export class MemoryStore implements LogStore {
@@ -78,6 +80,9 @@ export class MemoryStore implements LogStore {
   async indexOf(entry: string) {
     const i = this.items.findIndex((x) => x.entry === entry);
     return i < 0 ? null : i;
+  }
+  async entries(from: number, limit: number) {
+    return this.items.slice(from, from + limit).map((i) => i.entry);
   }
   /** For tests only: a dishonest operator rewriting an old entry. */
   overwriteForTest(index: number, entry: string) {

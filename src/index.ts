@@ -16,3 +16,4 @@ export * from "./operator.js";
 export * from "./possession.js";
 export * from "./fingerprint.js";
 export * from "./known-registers.js";
+export * from "./mirror.js";
