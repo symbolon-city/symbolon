@@ -60,6 +60,7 @@ test("guide: common questions get prepared answers for free, without calling the
     assert.equal(r.body.faqId, id, q);
     assert.match(r.body.notice, /not an instruction/);
     assert.equal(r.body.written_by, "people", "prepared answers say they are written by people");
+    assert.match(r.body.notice, /\(no AI\)\. Information only/);
   }
   assert.equal(calls.length, 0);
 });

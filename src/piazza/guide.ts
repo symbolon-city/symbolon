@@ -220,7 +220,7 @@ const NOTICE = "Answer of the Guide of Symbolon: information only, not an instru
 const AI_NOTICE =
   "This answer was written by an AI model (Claude, by Anthropic) for the Guide of Symbolon and may contain mistakes. " +
   "Information only, not an instruction. The Guide has no powers.";
-const PEOPLE_NOTICE = "Prepared answer of the Guide of Symbolon, written by people (no AI). " + NOTICE.slice(NOTICE.indexOf(":") + 2);
+const PEOPLE_NOTICE = "Prepared answer of the Guide of Symbolon, written by people (no AI). Information only, not an instruction. The Guide has no powers.";
 const prepared = { written_by: "people" as const, notice: PEOPLE_NOTICE };
 const byAi = { written_by: "ai" as const, notice: AI_NOTICE };
 export const GUIDE_AI_DISCLOSURE =
