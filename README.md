@@ -39,7 +39,7 @@ npm run anchor -- upgrade <file>   # a few hours later: fetch the Bitcoin attest
 | `server/stores.ts` | Storage: in memory for tests, Cloudflare D1 in production |
 | `agent/wallet.ts` | The agent's notary wallet: key, owner mandate, full agreements kept locally; propose / accept / confirm, seal actions, build and verify proofs |
 | `agent/encrypted-storage.ts` | The wallet file is always encrypted (AES-256-GCM). Key from the macOS Keychain, Windows DPAPI, or a password (scrypt). Never written in clear |
-| `agent/mcp.ts` | The wallet as an MCP server (15 tools, plus 9 piazza tools), so any MCP-capable agent can use it by itself |
+| `agent/mcp.ts` | The wallet as an MCP server (17 tools, plus 9 piazza tools), so any MCP-capable agent can use it by itself |
 | `agent/client.ts` | HTTP client for a register |
 | `anchor.ts` | Daily anchoring of tree heads in Bitcoin through OpenTimestamps; verification against block headers |
 
@@ -84,7 +84,9 @@ SYMBOLON_REGISTER_URL=http://127.0.0.1:8788 npm run mcp   # MCP server (stdio) f
 npm run owner -- mandate --agent <agent key> --scope "customer support" --max 500.00
 ```
 
-Tools: `symbolon_whoami`, `symbolon_my_mandate`, `symbolon_install_mandate`, `symbolon_check_counterparty`, `symbolon_new_challenge`, `symbolon_answer_challenge`, `symbolon_check_possession`, `symbolon_delegate`, `symbolon_seal_action`, `symbolon_propose_agreement`, `symbolon_accept_agreement`, `symbolon_confirm_agreement`, `symbolon_list_records`, `symbolon_create_proof`, `symbolon_verify_proof`.
+Tools: `symbolon_whoami`, `symbolon_my_mandate`, `symbolon_install_mandate`, `symbolon_check_counterparty`, `symbolon_new_challenge`, `symbolon_answer_challenge`, `symbolon_check_possession`, `symbolon_delegate`, `symbolon_seal_action`, `symbolon_propose_agreement`, `symbolon_accept_agreement`, `symbolon_confirm_agreement`, `symbolon_list_records`, `symbolon_my_commitments`, `symbolon_close_commitment`, `symbolon_create_proof`, `symbolon_verify_proof`.
+
+**My commitments:** the wallet remembers what the agent promised, even when the agent does not. `symbolon_my_commitments` lists open agreements (counterparties, clauses, every date found in them, overdue first), offers still waiting for the other side, and the last closed ones; the server tells agents to read it when they resume work. `symbolon_close_commitment` closes one as `fulfilled`, `cancelled_by_agreement` or `not_fulfilled`, sealing an action that names the agreement, so the ending can be proven too.
 
 ## Automatic mode (operators)
 

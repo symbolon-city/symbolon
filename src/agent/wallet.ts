@@ -24,6 +24,22 @@ export interface StoredRecord {
   opened: OpenedClauses;
   mandates: Mandate[];
   receipt?: Receipt;
+  /** For an agreement this agent has closed: how it ended, and the sealed action that says so. */
+  closed?: { outcome: CommitmentOutcome; at: string; entry: string };
+}
+
+/** How a commitment ended. The closing is itself sealed, so it can be proven like the agreement. */
+export const COMMITMENT_OUTCOMES = ["fulfilled", "cancelled_by_agreement", "not_fulfilled"] as const;
+export type CommitmentOutcome = (typeof COMMITMENT_OUTCOMES)[number];
+
+/** Dates written in clause values (2026-11-17, or full ISO times, also inside intervals "a/b"), found anywhere inside. */
+function datesIn(value: Json, out: string[] = []): string[] {
+  if (typeof value === "string") {
+    for (const m of value.matchAll(/\b\d{4}-\d{2}-\d{2}(?:T\d{2}:\d{2}(?::\d{2}(?:\.\d+)?)?(?:Z|[+-]\d{2}:\d{2})?)?\b/g))
+      if (!Number.isNaN(Date.parse(m[0]))) out.push(m[0]);
+  } else if (Array.isArray(value)) value.forEach((v) => datesIn(v, out));
+  else if (value && typeof value === "object") Object.values(value).forEach((v) => datesIn(v as Json, out));
+  return out;
 }
 
 export interface WalletState {
@@ -344,6 +360,85 @@ export class Wallet {
     delete this.state.offers[c.record.body.clausesRoot];
     await this.persist();
     return { entry };
+  }
+
+  /**
+   * "My commitments": what this agent has promised and not yet closed, so that it can pick up its work
+   * after a conversation ends and it forgets. Open agreements (with every date found in their clauses,
+   * overdue ones first), offers it sent that are still waiting for the other side, and the last closed ones.
+   */
+  commitments() {
+    const now = this.now();
+    const nowMs = now.getTime();
+    const counterparties = (r: StoredRecord) =>
+      r.record.body.parties
+        .filter((p) => p.agent !== this.key.publicKey)
+        .map((p) => {
+          const m = r.mandates.find((x) => mandateId(x) === p.mandate);
+          return { agent: p.agent, owner: m?.body.owner.domain ?? "unknown", scope: m?.body.scope };
+        });
+    const open = Object.entries(this.state.records)
+      .filter(([, r]) => r.kind === "agreement" && !r.closed)
+      .map(([entry, r]) => {
+        const clauses = clausesObject(r.opened);
+        const dates = Object.entries(clauses)
+          .flatMap(([name, v]) => datesIn(v).map((date) => ({ clause: name, date })))
+          .sort((a, b) => Date.parse(a.date) - Date.parse(b.date));
+        const last = dates.length ? Date.parse(dates[dates.length - 1].date.split("/").pop()!) : NaN;
+        const next = dates.find((d) => Date.parse(d.date) >= nowMs);
+        return {
+          entry,
+          sealed_at: r.receipt?.head.time,
+          with: counterparties(r),
+          clauses,
+          dates,
+          ...(next ? { next_date: next } : {}),
+          overdue: Number.isFinite(last) && last < nowMs,
+        };
+      })
+      .sort((a, b) => Number(b.overdue) - Number(a.overdue) || (Date.parse(a.next_date?.date ?? "9999") - Date.parse(b.next_date?.date ?? "9999")));
+    const waiting = Object.entries(this.state.offers).map(([root, r]) => ({
+      offer: root,
+      to: counterparties(r),
+      clauses: clausesObject(r.opened),
+      offered_at: r.record.body.createdAt,
+      note: "Sent, not yet sealed: the other agent has not accepted (or you have not filed its confirmation with symbolon_confirm_agreement).",
+    }));
+    const closed = Object.entries(this.state.records)
+      .filter(([, r]) => r.closed)
+      .map(([entry, r]) => ({ entry, with: counterparties(r), outcome: r.closed!.outcome, at: r.closed!.at, closing_entry: r.closed!.entry }))
+      .sort((a, b) => b.at.localeCompare(a.at))
+      .slice(0, 20);
+    const m = this.state.mandate;
+    return {
+      as_of: now.toISOString(),
+      my_mandate: m
+        ? { owner: m.body.owner.domain, scope: m.body.scope, valid_until: m.body.notAfter, days_left: Math.floor((Date.parse(m.body.notAfter) - nowMs) / 86_400_000) }
+        : null,
+      open,
+      waiting,
+      closed,
+      how_to_use:
+        "These are the promises this agent made on behalf of its owner, kept in its wallet. Read them when you resume work. " +
+        "When one is done (or cancelled by both sides, or not kept), close it with symbolon_close_commitment: the closing is sealed too.",
+    };
+  }
+
+  /** Closes an open agreement with its outcome, sealing an action that names it: the ending can be proven too. */
+  async closeCommitment(p: { entry: string; outcome: CommitmentOutcome; note?: string }) {
+    const r = this.state.records[p.entry];
+    if (!r || r.kind !== "agreement") throw new Error("no sealed agreement of mine with this fingerprint (see symbolon_my_commitments)");
+    if (r.closed) throw new Error(`already closed on ${r.closed.at} as ${r.closed.outcome}`);
+    if (!(COMMITMENT_OUTCOMES as readonly string[]).includes(p.outcome)) throw new Error(`outcome must be one of ${COMMITMENT_OUTCOMES.join(", ")}`);
+    if (p.note !== undefined && (typeof p.note !== "string" || p.note.length > 500)) throw new Error("note: plain text of at most 500 characters");
+    const sealed = await this.sealAction({
+      instruction: `close commitment ${p.entry}`,
+      action: p.outcome,
+      details: { closes: p.entry, outcome: p.outcome, ...(p.note ? { note: p.note } : {}) },
+    });
+    r.closed = { outcome: p.outcome, at: sealed.sealedAt, entry: sealed.entry };
+    await this.persist();
+    return { closed: p.entry, outcome: p.outcome, closing_entry: sealed.entry, sealed_at: sealed.sealedAt };
   }
 
   list() {
