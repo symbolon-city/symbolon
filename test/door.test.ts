@@ -58,6 +58,7 @@ test("the visitors' door offers only keyless tools", async () => {
     "symbolon_about",
     "symbolon_check_counterparty",
     "symbolon_check_possession",
+    "symbolon_fingerprint",
     "symbolon_lookup_fingerprint",
     "symbolon_new_challenge",
     "symbolon_seal_fingerprint",
@@ -79,6 +80,26 @@ test("a visitor seals a fingerprint and finds it again", async () => {
   const about = await call("symbolon_about");
   assert.equal(about.register.size, 1);
   await assert.rejects(call("symbolon_seal_fingerprint", { fingerprint: "not a fingerprint" }));
+});
+
+test("a visitor computes a fingerprint the standard way, then seals it", async () => {
+  const { deps } = setup();
+  const { call } = await connect(deps);
+  const t = await call("symbolon_fingerprint", { text: "my invoice 2026-118" });
+  assert.equal(t.fingerprint, sha("my invoice 2026-118"));
+  assert.equal(t.method, "sha256-utf8");
+  // The same JSON with other spacing and key order gives the same fingerprint, as object or as JSON text.
+  const a = await call("symbolon_fingerprint", { json: { price: { value: "60.00", currency: "EUR" }, service: "boiler" } });
+  const b = await call("symbolon_fingerprint", { json: '{ "service": "boiler", "price": { "currency": "EUR", "value": "60.00" } }' });
+  assert.equal(a.fingerprint, b.fingerprint);
+  assert.equal(a.canonical, '{"price":{"currency":"EUR","value":"60.00"},"service":"boiler"}');
+  assert.equal(a.fingerprint, sha(a.canonical));
+  await assert.rejects(call("symbolon_fingerprint", { json: { amount: 60.5 } }), /integers/);
+  await assert.rejects(call("symbolon_fingerprint", {}), /exactly one/);
+  await assert.rejects(call("symbolon_fingerprint", { text: "x", json: {} }), /exactly one/);
+  await assert.rejects(call("symbolon_fingerprint", { json: "{not json" }), /not valid JSON/);
+  const sealed = await call("symbolon_seal_fingerprint", { fingerprint: a.fingerprint });
+  assert.equal(sealed.receipt.entry, a.fingerprint);
 });
 
 test("a visitor checks a counterparty: published owner key or not", async () => {
@@ -155,7 +176,7 @@ test("over HTTP: stateless MCP at /mcp, description at /", async () => {
 
   const headers = { "mcp-protocol-version": "2025-06-18" };
   const list = (await (await rpc({ jsonrpc: "2.0", id: 2, method: "tools/list" }, headers)).json()) as any;
-  assert.equal(list.result.tools.length, 13);
+  assert.equal(list.result.tools.length, 14);
   const fp = sha("over http");
   const sealed = (await (await rpc({ jsonrpc: "2.0", id: 3, method: "tools/call", params: { name: "symbolon_seal_fingerprint", arguments: { fingerprint: fp } } }, headers)).json()) as any;
   assert.equal(JSON.parse(sealed.result.content[0].text).receipt.index, 0);

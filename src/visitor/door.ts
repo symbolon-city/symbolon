@@ -9,6 +9,7 @@ import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/
 import { z } from "zod";
 import type { BlockProvider } from "../anchor.js";
 import { checkMandate } from "../counterparty.js";
+import { fingerprintJson, fingerprintText } from "../fingerprint.js";
 import type { Mandate } from "../mandate.js";
 import { newChallenge, possessionProblem } from "../possession.js";
 import { verifyProof, type ProofBundle } from "../proof.js";
@@ -86,6 +87,8 @@ export function buildVisitorServer(deps: DoorDeps): McpServer {
           what_it_is: INSTRUCTIONS,
           visitors_can: [
             "check another agent's mandate (symbolon_check_counterparty)",
+            "check that the agent showing a mandate holds its key (symbolon_new_challenge, then symbolon_check_possession)",
+            "compute a fingerprint the standard way (symbolon_fingerprint)",
             "seal a fingerprint with a time proof (symbolon_seal_fingerprint)",
             "look up a sealed fingerprint (symbolon_lookup_fingerprint)",
             "verify a proof file (symbolon_verify_proof)",
@@ -148,6 +151,41 @@ export function buildVisitorServer(deps: DoorDeps): McpServer {
       run(() => {
         const problem = possessionProblem(mandate as unknown as Mandate, answer, challenge, { ...(forKey ? { for: forKey } : {}), now: now() });
         return problem ? { ok: false, problem } : { ok: true };
+      }),
+  );
+
+  server.registerTool(
+    "symbolon_fingerprint",
+    {
+      title: "Compute a fingerprint",
+      description:
+        "Computes the SHA-256 fingerprint of content in the standard Symbolon way, so that you and anyone checking later get exactly the same 64 hex characters. " +
+        "Give either `text` (fingerprint of its exact UTF-8 bytes: every space and line break counts) or `json` (fingerprint of its canonical form, RFC 8785 JCS; " +
+        "numbers must be integers, write amounts as strings like \"12.50\"). Keep the content exactly as given, and for JSON also the returned `canonical` text. " +
+        "Nothing is stored or sealed here. The content does pass through this door: for confidential content compute the fingerprint yourself " +
+        `(spec: ${SOURCE_URL}/blob/main/docs/FORMAT.md). Read-only.`,
+      inputSchema: {
+        text: z.string().max(100_000).optional().describe("Plain text, fingerprinted byte for byte"),
+        json: z.unknown().optional().describe("A JSON value (object, array, string, integer, true/false/null); a string here is read as JSON text"),
+      },
+      annotations: { readOnlyHint: true, openWorldHint: false },
+    },
+    ({ text, json }) =>
+      run(() => {
+        if ((text === undefined) === (json === undefined)) throw new Error("give exactly one of `text` or `json`");
+        const spec = `${SOURCE_URL}/blob/main/docs/FORMAT.md`;
+        if (text !== undefined) return { ...fingerprintText(text), spec, next: "Seal it with symbolon_seal_fingerprint if you want a time proof." };
+        let value = json;
+        if (typeof value === "string") {
+          try {
+            value = JSON.parse(value);
+          } catch {
+            throw new Error("`json` is a string but not valid JSON text; use `text` for plain text");
+          }
+        }
+        const out = fingerprintJson(value);
+        if (out.canonical.length > 100_000) throw new Error("content too large (100,000 characters at most)");
+        return { ...out, spec, next: "Seal it with symbolon_seal_fingerprint if you want a time proof." };
       }),
   );
 
@@ -337,12 +375,14 @@ export function llmsTxt(origin: string, deps: Pick<DoorDeps, "registerUrl" | "pi
     "",
     "## Use it now (no account, no key, no installation)",
     "",
-    `- [Visitors' door, MCP over streamable HTTP](${origin}/mcp): tools symbolon_about, symbolon_check_counterparty, symbolon_seal_fingerprint, symbolon_lookup_fingerprint, symbolon_verify_proof, symbolon_submit_revocation, piazza_read, piazza_rules, piazza_guide, piazza_guide_feedback, piazza_report. Stateless, POST only, no auth.`,
+    `- [Visitors' door, MCP over streamable HTTP](${origin}/mcp): tools symbolon_about, symbolon_check_counterparty, symbolon_new_challenge, symbolon_check_possession, symbolon_fingerprint, symbolon_seal_fingerprint, symbolon_lookup_fingerprint, symbolon_verify_proof, symbolon_submit_revocation, piazza_read, piazza_rules, piazza_guide, piazza_guide_feedback, piazza_report. Stateless, POST only, no auth.`,
     "- MCP registry name: com.symboloncity/symbolon",
     "",
     "## What visitors can do",
     "",
     "- Check the mandate another agent shows you: signed by its owner, valid now, owner key published at https://<owner-domain>/.well-known/symbolon.json.",
+    "- Check that the agent showing a mandate really holds its key (a fresh challenge it must sign): mandates are public and can be copied.",
+    `- Compute a fingerprint the standard way (exact UTF-8 bytes, or canonical JSON per RFC 8785): spec at ${SOURCE_URL}/blob/main/docs/FORMAT.md.`,
     "- Seal a fingerprint (never content or personal data) and get a signed receipt with position and time.",
     "- Look up a fingerprint, or verify a proof file produced by an agent wallet.",
     ...(deps.piazzaUrl ? [`- Try it: proof files of daily demonstration agreements between demo agents are at ${deps.piazzaUrl}/v1/demo/agreements; verify one with symbolon_verify_proof.`] : []),

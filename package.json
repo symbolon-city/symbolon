@@ -19,7 +19,8 @@
     "revocation:check": "tsx scripts/revocation-live-check.ts",
     "build:wallet": "tsx scripts/build-wallet.ts",
     "demo:check": "tsx scripts/demo-proof-check.ts",
-    "piazza:remove": "tsx scripts/piazza-remove.ts"
+    "piazza:remove": "tsx scripts/piazza-remove.ts",
+    "format:vectors": "tsx scripts/format-vectors.ts"
   },
   "license": "Apache-2.0",
   "dependencies": {

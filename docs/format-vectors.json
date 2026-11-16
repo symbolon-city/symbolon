@@ -1,0 +1,171 @@
+{
+  "spec": "docs/FORMAT.md",
+  "version": 1,
+  "note": "All hex is lowercase. Secret keys are given only so that signatures can be reproduced; never reuse them.",
+  "text_fingerprint": {
+    "text": "Boiler repair: tomorrow 8-10, call-out 60.00 EUR. Caffè incluso.\n",
+    "utf8_hex": "426f696c6572207265706169723a20746f6d6f72726f7720382d31302c2063616c6c2d6f75742036302e3030204555522e2043616666c3a820696e636c75736f2e0a",
+    "fingerprint": "4cd3c2834690f7ea2ae30816ace98cc931bef5bbf2a625dde0a83bbd660c6c57",
+    "method": "sha256-utf8",
+    "bytes": 66
+  },
+  "json_fingerprint": {
+    "json": {
+      "é": {
+        "z": 0,
+        "y": -3
+      },
+      "b": [
+        1,
+        "x",
+        true,
+        null
+      ],
+      "a": "12.50",
+      "a b": "quote \" backslash \\ newline \n tab \t ctrl \u0001 euro €"
+    },
+    "fingerprint": "9e4528471851ac1e0d710ffefd9fe125eb10a2d8304c43cfd763e1a72ce48709",
+    "method": "sha256-jcs",
+    "canonical": "{\"a\":\"12.50\",\"a b\":\"quote \\\" backslash \\\\ newline \\n tab \\t ctrl \\u0001 euro €\",\"b\":[1,\"x\",true,null],\"é\":{\"y\":-3,\"z\":0}}"
+  },
+  "signature": {
+    "secret_key": "0934dc7f530c9bc2dd7428e030b71f321e793496f69cfbf17680408ec7bee8a2",
+    "public_key": "ed25519:9afba335f2b682f0a2a274657f90de07f93eaf20d392e5c2f6ffe8009cae970f",
+    "value": {
+      "hello": "world",
+      "n": 42
+    },
+    "canonical": "{\"hello\":\"world\",\"n\":42}",
+    "signature": "593b540842e9a8a2682656389755e1a4f475b0e08573751615606548a34c559b98a0240d79d04d5b792be915a417b710cd036297d5719ecf5e407ba51a91eb08"
+  },
+  "clauses": {
+    "clauses": [
+      {
+        "name": "service",
+        "value": "boiler repair",
+        "salt": "1111111111111111111111111111111111111111111111111111111111111111"
+      },
+      {
+        "name": "price",
+        "value": {
+          "value": "60.00",
+          "currency": "EUR"
+        },
+        "salt": "2222222222222222222222222222222222222222222222222222222222222222"
+      },
+      {
+        "name": "window",
+        "value": "2026-11-17T08:00:00Z/2026-11-17T10:00:00Z",
+        "salt": "3333333333333333333333333333333333333333333333333333333333333333"
+      }
+    ],
+    "leaf_preimages": [
+      "{\"n\":\"service\",\"s\":\"1111111111111111111111111111111111111111111111111111111111111111\",\"v\":\"boiler repair\"}",
+      "{\"n\":\"price\",\"s\":\"2222222222222222222222222222222222222222222222222222222222222222\",\"v\":{\"currency\":\"EUR\",\"value\":\"60.00\"}}",
+      "{\"n\":\"window\",\"s\":\"3333333333333333333333333333333333333333333333333333333333333333\",\"v\":\"2026-11-17T08:00:00Z/2026-11-17T10:00:00Z\"}"
+    ],
+    "leaves": [
+      "5a4c55ade49fbdbdb671084a668f73789e52c2bd20733ffbc196b09e69a15192",
+      "90fea925e7f3f980480e9c1bb42faae707bbca65bbdf72b3c71fefc96dd7b556",
+      "fec80676f2ff3a41c3fb8669b9a2a56a5ea774bd5e7504931f33ca58657ad48e"
+    ],
+    "root": "d41e7829f40aede080977c87ec7791b290d7f4fb12f409f8a20656448505af21"
+  },
+  "mandate": {
+    "owner_secret_key": "232a20fc0df0e873aa59b3710f150ea949f4f6cdd58e2cf590a5c5a062c13873",
+    "mandate": {
+      "body": {
+        "type": "accord/mandate",
+        "v": 1,
+        "owner": {
+          "domain": "owner.example",
+          "key": "ed25519:81e7a1563645593c597179ccb8f4754cecd678340b7bc1a27a317c1766945547"
+        },
+        "agent": "ed25519:9afba335f2b682f0a2a274657f90de07f93eaf20d392e5c2f6ffe8009cae970f",
+        "scope": "home repairs",
+        "maxAmount": {
+          "value": "150.00",
+          "currency": "EUR"
+        },
+        "notBefore": "2026-11-16T00:00:00Z",
+        "notAfter": "2026-12-16T00:00:00Z",
+        "charter": "accord-charter/0.1"
+      },
+      "signature": "d9f3dc588d0e871f6c41b23d32d55fcc18bb859d66d12babfb8c836b5ace6dd156f4e075e5f77bbd7c30045328cb58ba5b80cb64fb18a5f0a34a36a6964f430f"
+    },
+    "canonical_body": "{\"agent\":\"ed25519:9afba335f2b682f0a2a274657f90de07f93eaf20d392e5c2f6ffe8009cae970f\",\"charter\":\"accord-charter/0.1\",\"maxAmount\":{\"currency\":\"EUR\",\"value\":\"150.00\"},\"notAfter\":\"2026-12-16T00:00:00Z\",\"notBefore\":\"2026-11-16T00:00:00Z\",\"owner\":{\"domain\":\"owner.example\",\"key\":\"ed25519:81e7a1563645593c597179ccb8f4754cecd678340b7bc1a27a317c1766945547\"},\"scope\":\"home repairs\",\"type\":\"accord/mandate\",\"v\":1}",
+    "id": "60903d1a15e6b2dffa1e3a0e48daa6e33ce987e9f6ed8703f7ab5e7eadac7fcd"
+  },
+  "record": {
+    "agent_secret_keys": {
+      "A": "0934dc7f530c9bc2dd7428e030b71f321e793496f69cfbf17680408ec7bee8a2",
+      "B": "82ed27b6bad5d5fcdb1bb7f5aa99baa96ee0d2f70965f8c8e4a9a2badf3f75c5"
+    },
+    "mandate_B": {
+      "body": {
+        "type": "accord/mandate",
+        "v": 1,
+        "owner": {
+          "domain": "owner.example",
+          "key": "ed25519:81e7a1563645593c597179ccb8f4754cecd678340b7bc1a27a317c1766945547"
+        },
+        "agent": "ed25519:e9ff8d821920bf62768f4d9a58e8429cbd932067b11165a64b5b428f0f42d721",
+        "scope": "plumbing services",
+        "notBefore": "2026-11-16T00:00:00Z",
+        "notAfter": "2026-12-16T00:00:00Z",
+        "charter": "accord-charter/0.1"
+      },
+      "signature": "21b587ce3f522d86e04383188b5af700f56bfe527954b776a547e6d8939e555755aa272eeb84575db366eb3755c324957b603dfe72461b78de99fa4e0b0d5b0b"
+    },
+    "record": {
+      "body": {
+        "type": "accord/agreement",
+        "v": 1,
+        "clausesRoot": "d41e7829f40aede080977c87ec7791b290d7f4fb12f409f8a20656448505af21",
+        "clauseCount": 3,
+        "parties": [
+          {
+            "agent": "ed25519:9afba335f2b682f0a2a274657f90de07f93eaf20d392e5c2f6ffe8009cae970f",
+            "mandate": "60903d1a15e6b2dffa1e3a0e48daa6e33ce987e9f6ed8703f7ab5e7eadac7fcd"
+          },
+          {
+            "agent": "ed25519:e9ff8d821920bf62768f4d9a58e8429cbd932067b11165a64b5b428f0f42d721",
+            "mandate": "08a7768e8bc7a72e2f63e4ef9b2897e24c526079e9c6fec6cafa4f5116fa152f"
+          }
+        ],
+        "charter": "accord-charter/0.1",
+        "createdAt": "2026-11-16T18:00:00.000Z",
+        "nonce": "00112233445566778899aabbccddeeff"
+      },
+      "signatures": [
+        {
+          "agent": "ed25519:e9ff8d821920bf62768f4d9a58e8429cbd932067b11165a64b5b428f0f42d721",
+          "signature": "acf5103cc612e53ef9fb484524ae7ec641ae3d350d7ba77601a628737cf0caeb6e6200b5cd6e2f25aa093fc0694c8969a385fff84e3dfe0538f2b338412c9405"
+        },
+        {
+          "agent": "ed25519:9afba335f2b682f0a2a274657f90de07f93eaf20d392e5c2f6ffe8009cae970f",
+          "signature": "4bbea73273b7602489e02ada07b9cc98ea72d373a2e4fcc3e287ff20fa09d77a062f30895088abec753498d3a24f4883350e4169a61f30772ac858598c8ab30d"
+        }
+      ]
+    },
+    "entry_preimage": "{\"body\":{\"charter\":\"accord-charter/0.1\",\"clauseCount\":3,\"clausesRoot\":\"d41e7829f40aede080977c87ec7791b290d7f4fb12f409f8a20656448505af21\",\"createdAt\":\"2026-11-16T18:00:00.000Z\",\"nonce\":\"00112233445566778899aabbccddeeff\",\"parties\":[{\"agent\":\"ed25519:9afba335f2b682f0a2a274657f90de07f93eaf20d392e5c2f6ffe8009cae970f\",\"mandate\":\"60903d1a15e6b2dffa1e3a0e48daa6e33ce987e9f6ed8703f7ab5e7eadac7fcd\"},{\"agent\":\"ed25519:e9ff8d821920bf62768f4d9a58e8429cbd932067b11165a64b5b428f0f42d721\",\"mandate\":\"08a7768e8bc7a72e2f63e4ef9b2897e24c526079e9c6fec6cafa4f5116fa152f\"}],\"type\":\"accord/agreement\",\"v\":1},\"signatures\":[{\"agent\":\"ed25519:9afba335f2b682f0a2a274657f90de07f93eaf20d392e5c2f6ffe8009cae970f\",\"signature\":\"4bbea73273b7602489e02ada07b9cc98ea72d373a2e4fcc3e287ff20fa09d77a062f30895088abec753498d3a24f4883350e4169a61f30772ac858598c8ab30d\"},{\"agent\":\"ed25519:e9ff8d821920bf62768f4d9a58e8429cbd932067b11165a64b5b428f0f42d721\",\"signature\":\"acf5103cc612e53ef9fb484524ae7ec641ae3d350d7ba77601a628737cf0caeb6e6200b5cd6e2f25aa093fc0694c8969a385fff84e3dfe0538f2b338412c9405\"}]}",
+    "entry": "cf98fec784e3e5fb4ae61637eac8ffa1892da9bb27958472c41e6300d9aa73f1"
+  },
+  "register": {
+    "entries": [
+      "cf98fec784e3e5fb4ae61637eac8ffa1892da9bb27958472c41e6300d9aa73f1",
+      "acddd9418ae35d692cbaaeb64703fa695cbfce3d2cfffe09214b200c6b4cc971",
+      "a926641b8925081c464c4d238815623dd90e90cf287a72c408f19407e118a44c"
+    ],
+    "leaves": [
+      "1b04d0a8a8a6cb40f75aafd4aa5c758a9b618e90c3b3df025badb7888af2345a",
+      "0ba4479bb88aa2c5235a1c0bcc44093a02fc84c187e5bd599430af1a31f5610a",
+      "896bcacb6aab7376e887cf473e6574b31569e51acc59d7f65b979f226791b8c9"
+    ],
+    "roots": {
+      "1": "1b04d0a8a8a6cb40f75aafd4aa5c758a9b618e90c3b3df025badb7888af2345a",
+      "2": "b71d021c0d07ecc91c1a1655a5d16bd0316c6c775f1183cfa693bb75c132f8ca",
+      "3": "70adb71e4a231e9fd50087efd71e22cf94561eec41bdd8e3b3c893733bb03d24"
+    }
+  }
+}

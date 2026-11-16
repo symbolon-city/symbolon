@@ -14,3 +14,4 @@ export * from "./counterparty.js";
 export * from "./revocation.js";
 export * from "./operator.js";
 export * from "./possession.js";
+export * from "./fingerprint.js";
