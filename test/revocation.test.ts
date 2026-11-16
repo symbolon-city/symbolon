@@ -151,6 +151,35 @@ test("records sealed before a revocation stay valid; after it the wallet refuses
   assert.match(bad.checks.find((c) => c.name.includes("not revoked"))!.detail!, /revoked on/);
 });
 
+test("the wallet fails closed: if its own revocations cannot be read, it does not act", async () => {
+  const { deps } = registerSetup();
+  let blockRevocations = false;
+  // Only the revocation lookup is blocked (the attack: hide a revocation, let sealing through).
+  const f: typeof fetch = async (input, init) => {
+    if (blockRevocations && new URL(String(input)).pathname.startsWith("/v1/revocations")) throw new Error("blocked");
+    return handle(new Request(String(input), init), deps);
+  };
+  const client = new HttpRegisterClient("https://reg.example", f);
+  const owner = generateKeyPair();
+  const ownerResolver = staticOwnerResolver({ "alfa.example": [owner.publicKey] });
+  const wallet = await Wallet.open(new MemoryWalletStorage(), client, { ownerResolver });
+  await wallet.installMandate(mandateFor(owner, wallet.agentKey));
+  await wallet.sealAction({ instruction: "refund order 7", action: "refunded 12.00 EUR" });
+
+  blockRevocations = true;
+  await assert.rejects(wallet.sealAction({ instruction: "refund order 8", action: "refunded 9.00 EUR" }), /could not check whether my mandate was revoked/);
+  await assert.rejects(wallet.delegate({ agent: generateKeyPair().publicKey, scope: "support", hours: 1 }), /could not check/);
+  const other = await Wallet.open(new MemoryWalletStorage(), client, { ownerResolver });
+  blockRevocations = false;
+  await other.installMandate(mandateFor(owner, other.agentKey));
+  blockRevocations = true;
+  await assert.rejects(wallet.propose({ counterparty: other.myMandate(), clauses: { service: "support" } }), /revocations|could not check/);
+
+  blockRevocations = false;
+  const ok = await wallet.sealAction({ instruction: "refund order 8", action: "refunded 9.00 EUR" });
+  assert.ok(ok.entry, "once the list is readable again, the wallet acts");
+});
+
 test("the piazza refuses envelopes signed under a revoked mandate", async () => {
   const { client } = registerSetup();
   const owner = generateKeyPair();

@@ -142,10 +142,18 @@ export class Wallet {
     return checkMandate(m, { ownerResolver: this.opts.ownerResolver, revocations: (s, k) => this.register.revocations(s, k), now: this.now() });
   }
 
-  /** Refuses to act on a revoked mandate (own or counterparty's). Unreachable revocation list: not blocking. */
+  /**
+   * Refuses to act on a revoked mandate. Fails closed: if the revocation list cannot be read (register
+   * down, or someone blocking just that lookup), the wallet does not act, exactly as for a counterparty.
+   */
   private async refuseIfRevoked(m: Mandate, whose: string) {
     const keys = this.opts.ownerResolver ? await this.opts.ownerResolver(m.body.owner.domain) : null;
-    const r = await this.register.revocations(subjectsOf(m), signersOf(m, keys)).catch(() => []);
+    let r: Awaited<ReturnType<RegisterClient["revocations"]>>;
+    try {
+      r = await this.register.revocations(subjectsOf(m), signersOf(m, keys));
+    } catch {
+      throw new Error(`could not check whether ${whose} mandate was revoked (revocation list unreachable): not acting until it can be checked`);
+    }
     const hit = revocationsOf(m, r, keys)[0];
     if (hit) throw new Error(`${whose} mandate was revoked on ${hit.time}${hit.revocation.body.reason ? ` (${hit.revocation.body.reason})` : ""}`);
   }
