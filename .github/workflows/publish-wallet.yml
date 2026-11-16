@@ -1,0 +1,47 @@
+# Publishes the wallet (@symbolon-city/wallet) to npm from GitHub, with no password or token:
+# npm trusts this workflow ("trusted publishing", OIDC) and attaches a provenance statement that
+# shows publicly which commit and which workflow built the package.
+#
+# How: raise the version (packages/wallet/package.json, packages/wallet/server.json twice,
+# src/agent/mcp.ts), push, then GitHub → Actions → "Publish wallet to npm" → Run workflow.
+# One-time setup on npmjs.com: package settings → Trusted publishing → GitHub Actions,
+# organization "symbolon-city", repository "symbolon", workflow "publish-wallet.yml".
+
+name: Publish wallet to npm
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  id-token: write
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          registry-url: https://registry.npmjs.org
+      - name: npm recent enough for trusted publishing
+        run: npm install -g npm@^11.5.1
+      - run: npm ci
+      - name: All automatic checks must pass
+        run: npm test
+      - run: npm run typecheck
+      - run: npm run build:wallet
+      - name: Skip if this version is already on npm
+        id: check
+        working-directory: packages/wallet
+        run: |
+          V=$(node -p "require('./package.json').version")
+          if npm view "@symbolon-city/wallet@$V" version >/dev/null 2>&1; then
+            echo "Version $V is already published: nothing to do."
+            echo "skip=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Publish with provenance
+        if: steps.check.outputs.skip != 'true'
+        working-directory: packages/wallet
+        run: npm publish --access public --provenance
