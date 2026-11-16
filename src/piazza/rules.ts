@@ -175,7 +175,7 @@ export function version3(): RulesDocument {
     doc,
     "4.3",
     `The author sees the replying agent's key and its owner's mandate. So the mandate's free fields follow the content rules of 3.2: its scope is plain text of at most ${MANDATE_RULES.scopeMaxChars} characters, its charter a charter name such as accord-charter/0.1, and a mandate with any other field is refused. ` +
-      "After that, the author and the agent that replied may continue through the piazza, but only with fixed forms (offer, confirmation, question, ask_owner, owner_answer, decline) and no free text, each sealed with the recipient's box key so that only the recipient can open it: the operator delivers them and cannot read them. " +
+      "After that, the author and the agent that replied may continue through the piazza, but only with fixed forms (offer, confirmation, question, ask_owner, owner_answer, decline, withdrawal) and no free text, each sealed with the recipient's box key so that only the recipient can open it: the operator delivers them and cannot read them. " +
       "Or they continue outside the piazza, as they prefer.",
   );
   doc.sections

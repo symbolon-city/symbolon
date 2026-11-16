@@ -138,6 +138,8 @@ export const QUESTIONS = ["unclear", "please_change", "need_more_detail", "which
 export const ASK_OWNER_REASONS = ["over_my_limit", "outside_my_scope", "needs_approval"] as const;
 export const OWNER_DECISIONS = ["go_ahead", "declined"] as const;
 export const DECLINE_REASONS = ["price", "date", "scope", "not_now", "other"] as const;
+/** Why a party uses its right of withdrawal (only within the clause withdrawal_until of the agreement). */
+export const WITHDRAWAL_REASONS = ["changed_mind", "mistake", "owner_decision", "other"] as const;
 /** Longest pause for "I ask my owner". */
 export const ASK_OWNER_MAX_DAYS = 7;
 
@@ -151,9 +153,11 @@ export type Form =
   | { form: "question"; about: string; ask: (typeof QUESTIONS)[number] }
   | { form: "ask_owner"; about: string; reason: (typeof ASK_OWNER_REASONS)[number]; until: string }
   | { form: "owner_answer"; about: string; decision: (typeof OWNER_DECISIONS)[number] }
-  | { form: "decline"; about: string; reason: (typeof DECLINE_REASONS)[number] };
+  | { form: "decline"; about: string; reason: (typeof DECLINE_REASONS)[number] }
+  /** A withdrawal within the agreed period: `about` is the agreement's fingerprint, `proof` proves the sealed withdrawal. */
+  | { form: "withdrawal"; about: string; reason: (typeof WITHDRAWAL_REASONS)[number]; proof: Json };
 
-export const FORM_NAMES = ["offer", "confirmation", "question", "ask_owner", "owner_answer", "decline"] as const;
+export const FORM_NAMES = ["offer", "confirmation", "question", "ask_owner", "owner_answer", "decline", "withdrawal"] as const;
 
 const aboutOk = (a: unknown) => typeof a === "string" && (a === "general" || HEX64.test(a) || (a.length >= 1 && a.length <= 100 && /^[\p{L}\p{N} _.-]+$/u.test(a)));
 const only = (x: object, keys: string[]) => Object.keys(x).every((k) => keys.includes(k));
@@ -184,6 +188,10 @@ export function formProblem(f: unknown, now = new Date()): string | null {
     case "decline":
       if (!only(x, ["form", "about", "reason"]) || !aboutOk(x.about)) return "decline carries only {form, about, reason}";
       return oneOf(x.reason, DECLINE_REASONS) ? null : `reason must be one of: ${DECLINE_REASONS.join(", ")}`;
+    case "withdrawal":
+      if (!only(x, ["form", "about", "reason", "proof"]) || typeof x.about !== "string" || !HEX64.test(x.about)) return "a withdrawal carries only {form, about: <agreement fingerprint>, reason, proof}";
+      if (!x.proof || typeof x.proof !== "object") return "a withdrawal needs the proof of the sealed withdrawal";
+      return oneOf(x.reason, WITHDRAWAL_REASONS) ? null : `reason must be one of: ${WITHDRAWAL_REASONS.join(", ")}`;
   }
   return "unknown form";
 }
@@ -196,4 +204,5 @@ export const FORM_MEANING: Record<(typeof FORM_NAMES)[number], string> = {
   ask_owner: "The other agent paused to ask its owner, until the given time. The negotiation is not over: wait for owner_answer.",
   owner_answer: "The other agent's owner decided: go_ahead (the negotiation continues) or declined.",
   decline: "The other agent declines, with a fixed reason.",
+  withdrawal: "The other agent withdraws from a sealed agreement within the agreed period. Check and record it with symbolon_record_withdrawal: your wallet verifies the proof and the date itself.",
 };

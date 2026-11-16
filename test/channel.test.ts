@@ -195,3 +195,71 @@ test("the channel opens only on the date announced 14 days ahead in the rules (c
   const rules = (await (await piazzaFetch(`${PIAZZA}/v1/rules`)).json()) as { upcoming: { version: number } };
   assert.equal(rules.upcoming.version, 3);
 });
+
+test("right of withdrawal: within the agreed period, sealed, sent with its proof, checked by the other wallet", async () => {
+  const { agent } = await city();
+  const plumber = await agent("plumber.example", "plumbing services", "1000.00");
+  const home = await agent("home.example", "home repairs", "150.00");
+  const { post } = await plumber.call("piazza_post", { kind: "offer", category: "service", title: "Yearly boiler check", text: "Check and certificate, 90 EUR", days: 7 });
+  await home.call("piazza_reply", { postId: post.id, reply: "interested" });
+  const inbox = await plumber.call("piazza_inbox");
+
+  // The agreement gives both sides 48 hours to change their mind.
+  const offer = await plumber.call("symbolon_propose_agreement", {
+    counterparty_mandate: inbox.replies[0].from.mandate,
+    clauses: { service: "yearly boiler check", amount: { value: "90.00", currency: "EUR" }, withdrawal_until: later(48) },
+  });
+  const accepted = await home.call("symbolon_accept_agreement", { offer });
+  await plumber.call("symbolon_confirm_agreement", { confirmation: accepted.confirmation });
+  const entry = accepted.entry;
+  assert.ok((await home.call("symbolon_my_commitments")).open[0].can_withdraw_until);
+
+  // The home's owner changes its mind: the withdrawal is sealed and sent, with its proof.
+  const w = await home.call("symbolon_withdraw_agreement", { entry, reason: "owner_decision" });
+  assert.equal(w.withdrawn, entry);
+  await home.call("piazza_send_form", { to: plumber.wallet.agentKey, postId: post.id, form: w.form });
+  const got = await plumber.call("piazza_read_forms");
+  assert.equal(got.forms[0].form.form, "withdrawal");
+
+  // A forged withdrawal (the proof changed) is refused; the real one is recorded after the wallet checks it.
+  const forged = JSON.parse(JSON.stringify(got.forms[0].form));
+  forged.proof.receipt.index += 1;
+  await assert.rejects(plumber.call("symbolon_record_withdrawal", { form: forged }), /does not hold/);
+  const rec = await plumber.call("symbolon_record_withdrawal", { form: got.forms[0].form });
+  assert.equal(rec.recorded, entry);
+  for (const a of [home, plumber]) {
+    const c = await a.call("symbolon_my_commitments");
+    assert.equal(c.open.length, 0);
+    assert.equal(c.closed[0].outcome, "withdrawn");
+  }
+  assert.equal((await plumber.call("symbolon_my_commitments")).closed[0].by, "counterparty");
+  await assert.rejects(home.call("symbolon_withdraw_agreement", { entry, reason: "mistake" }), /already closed/);
+});
+
+test("right of withdrawal: not without the clause, not after the period, not by a stranger, not for another agreement", async () => {
+  const { agent } = await city();
+  const plumber = await agent("plumber.example", "plumbing services", "1000.00");
+  const home = await agent("home.example", "home repairs", "150.00");
+  const other = await agent("other.example", "home repairs", "150.00");
+  const deal = async (clauses: Record<string, unknown>, buyer = home) => {
+    const offer = await plumber.wallet.propose({ counterparty: buyer.wallet.myMandate(), clauses: clauses as never });
+    const acc = await buyer.wallet.accept(offer);
+    await plumber.wallet.confirm(acc.confirmation);
+    return acc.entry;
+  };
+  const noClause = await deal({ service: "repair", amount: { value: "60.00", currency: "EUR" } });
+  await assert.rejects(home.wallet.withdraw({ entry: noClause, reason: "changed_mind" }), /no right of withdrawal/);
+
+  const expired = await deal({ service: "repair", amount: { value: "60.00", currency: "EUR" }, withdrawal_until: later(-1) });
+  await assert.rejects(home.wallet.withdraw({ entry: expired, reason: "changed_mind" }), /period ended/);
+
+  // A withdrawal of one agreement cannot close another one, and one made by a stranger's agreement does not count.
+  const a1 = await deal({ service: "repair A", amount: { value: "60.00", currency: "EUR" }, withdrawal_until: later(48) });
+  const a2 = await deal({ service: "repair B", amount: { value: "60.00", currency: "EUR" }, withdrawal_until: later(48) });
+  const w1 = await home.wallet.withdraw({ entry: a1, reason: "mistake" });
+  await assert.rejects(plumber.wallet.recordWithdrawal({ about: a2, proof: w1.form.proof }), /does not withdraw this agreement/);
+  const s1 = await deal({ service: "repair C", amount: { value: "60.00", currency: "EUR" }, withdrawal_until: later(48) }, other);
+  const ws = await other.wallet.withdraw({ entry: s1, reason: "mistake" });
+  await assert.rejects(plumber.wallet.recordWithdrawal({ about: a2, proof: ws.form.proof }), /does not withdraw this agreement|not signed by the other party/);
+  assert.equal((await plumber.wallet.recordWithdrawal({ about: a1, proof: w1.form.proof })).recorded, a1);
+});

@@ -9,7 +9,7 @@ import type { Amount, Mandate } from "../mandate.js";
 import type { ProofBundle } from "../proof.js";
 import { COMMITMENT_OUTCOMES, type Confirmation, type Offer, type Wallet } from "./wallet.js";
 import { CATEGORIES, KINDS, REPLIES, type Action, type Envelope } from "../piazza/messages.js";
-import { ASK_OWNER_MAX_DAYS, ASK_OWNER_REASONS, DECLINE_REASONS, OWNER_DECISIONS, QUESTIONS, type Form } from "../channel.js";
+import { ASK_OWNER_MAX_DAYS, ASK_OWNER_REASONS, DECLINE_REASONS, OWNER_DECISIONS, QUESTIONS, WITHDRAWAL_REASONS, type Form } from "../channel.js";
 import { REPORT_REASONS } from "../piazza/rules.js";
 
 /** Accepts either a JSON object or a JSON string (some agents send strings). */
@@ -234,6 +234,35 @@ export function buildMcpServer(wallet: Wallet, opts: { piazzaUrl?: string; fetch
   );
 
   server.registerTool(
+    "symbolon_withdraw_agreement",
+    {
+      title: "Withdraw from an agreement (right of withdrawal)",
+      description:
+        "Withdraws from a sealed agreement, only if it has a clause withdrawal_until and that time has not passed (add such a clause when proposing, e.g. 48 hours ahead, if your owner wants a way back). " +
+        "The withdrawal is sealed and cannot be undone; the result includes a sealed-form payload with its proof to send to the other agent (piazza_send_form).",
+      inputSchema: {
+        entry: z.string().regex(/^[0-9a-f]{64}$/).describe("The agreement's fingerprint, from symbolon_my_commitments"),
+        reason: z.enum(WITHDRAWAL_REASONS),
+      },
+      annotations: { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: false },
+    },
+    ({ entry, reason }) => run(() => wallet.withdraw({ entry, reason })),
+  );
+
+  server.registerTool(
+    "symbolon_record_withdrawal",
+    {
+      title: "Record the other side's withdrawal",
+      description:
+        "Records that the other party withdrew from an agreement, after checking it yourself: the proof must hold, be signed by that party, name this agreement, and be sealed before its withdrawal_until. " +
+        "Pass the withdrawal form you received (from piazza_read_forms) or {about, proof}.",
+      inputSchema: { form: jsonObject.describe("The withdrawal form: {form: 'withdrawal', about, reason, proof}") },
+      annotations: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+    },
+    ({ form }) => run(() => wallet.recordWithdrawal(form as unknown as { about: string; proof: unknown })),
+  );
+
+  server.registerTool(
     "symbolon_create_proof",
     {
       title: "Create a proof",
@@ -336,7 +365,8 @@ export function buildMcpServer(wallet: Wallet, opts: { piazzaUrl?: string; fetch
           "{form:'offer', offer} an offer from symbolon_propose_agreement; {form:'confirmation', confirmation} from symbolon_accept_agreement; " +
           `{form:'question', about:<clause name|offer id|'general'>, ask:${QUESTIONS.join("|")}}; ` +
           `{form:'ask_owner', about, reason:${ASK_OWNER_REASONS.join("|")}, until:<time within ${ASK_OWNER_MAX_DAYS} days>} to pause and ask your owner instead of refusing (for example an offer above your limit); ` +
-          `{form:'owner_answer', about, decision:${OWNER_DECISIONS.join("|")}}; {form:'decline', about, reason:${DECLINE_REASONS.join("|")}}.`,
+          `{form:'owner_answer', about, decision:${OWNER_DECISIONS.join("|")}}; {form:'decline', about, reason:${DECLINE_REASONS.join("|")}}; ` +
+          "{form:'withdrawal', about, reason, proof} as returned by symbolon_withdraw_agreement.",
         inputSchema: {
           to: z.string().regex(/^ed25519:[0-9a-f]{64}$/).describe("The other agent's key"),
           postId: z.string().regex(/^[0-9a-f]{64}$/).describe("The post the conversation started on"),

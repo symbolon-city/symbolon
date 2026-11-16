@@ -18,7 +18,7 @@ import { answerChallenge, newChallenge, possessionProblem, type PossessionAnswer
 import { revocationsOf, signersOf, subjectsOf } from "../revocation.js";
 import { checkStoredEnvelope, signEnvelope, type Action, type Envelope } from "../piazza/messages.js";
 import { archiveKeyProblem, makeSnapshot, type ArchiveKeyClaim } from "../archive.js";
-import { FORM_MEANING, boxKeyClaim, boxKeyClaimProblem, formProblem, newBoxSecret, openBox, sealBox, type BoxKeyClaim, type BoxSecret, type Form } from "../channel.js";
+import { FORM_MEANING, WITHDRAWAL_REASONS, boxKeyClaim, boxKeyClaimProblem, formProblem, newBoxSecret, openBox, sealBox, type BoxKeyClaim, type BoxSecret, type Form } from "../channel.js";
 
 export interface StoredRecord {
   kind: "action" | "agreement";
@@ -27,12 +27,14 @@ export interface StoredRecord {
   mandates: Mandate[];
   receipt?: Receipt;
   /** For an agreement this agent has closed: how it ended, and the sealed action that says so. */
-  closed?: { outcome: CommitmentOutcome; at: string; entry: string };
+  closed?: { outcome: CommitmentOutcome | "withdrawn"; at: string; entry: string; by?: "me" | "counterparty" };
 }
 
 /** How a commitment ended. The closing is itself sealed, so it can be proven like the agreement. */
 export const COMMITMENT_OUTCOMES = ["fulfilled", "cancelled_by_agreement", "not_fulfilled"] as const;
 export type CommitmentOutcome = (typeof COMMITMENT_OUTCOMES)[number];
+/** The clause that gives both parties a right of withdrawal until the time it states (ISO 8601). */
+export const WITHDRAWAL_CLAUSE = "withdrawal_until";
 
 /** Dates written in clause values (2026-11-17, or full ISO times, also inside intervals "a/b"), found anywhere inside. */
 function datesIn(value: Json, out: string[] = []): string[] {
@@ -499,6 +501,7 @@ export class Wallet {
           clauses,
           dates,
           ...(next ? { next_date: next } : {}),
+          ...((u) => (u !== null && u > nowMs ? { can_withdraw_until: new Date(u).toISOString() } : {}))(this.withdrawalUntil(r)),
           overdue: Number.isFinite(last) && last < nowMs,
         };
       })
@@ -512,7 +515,7 @@ export class Wallet {
     }));
     const closed = Object.entries(this.state.records)
       .filter(([, r]) => r.closed)
-      .map(([entry, r]) => ({ entry, with: counterparties(r), outcome: r.closed!.outcome, at: r.closed!.at, closing_entry: r.closed!.entry }))
+      .map(([entry, r]) => ({ entry, with: counterparties(r), outcome: r.closed!.outcome, at: r.closed!.at, closing_entry: r.closed!.entry, ...(r.closed!.by ? { by: r.closed!.by } : {}) }))
       .sort((a, b) => b.at.localeCompare(a.at))
       .slice(0, 20);
     const m = this.state.mandate;
@@ -549,6 +552,71 @@ export class Wallet {
     await this.persist();
     await this.saveToOwnerArchive();
     return { closed: p.entry, outcome: p.outcome, closing_entry: sealed.entry, sealed_at: sealed.sealedAt };
+  }
+
+  /** The end of the withdrawal period of an agreement, or null if it has none. */
+  private withdrawalUntil(r: StoredRecord): number | null {
+    const v = clausesObject(r.opened)[WITHDRAWAL_CLAUSE];
+    const t = typeof v === "string" ? Date.parse(v) : NaN;
+    return Number.isFinite(t) ? t : null;
+  }
+
+  /**
+   * Right of withdrawal: within the period stated in the agreement (clause withdrawal_until), either party can
+   * withdraw. The withdrawal is sealed; the result includes a sealed form, with its proof, to send to the other side.
+   */
+  async withdraw(p: { entry: string; reason: (typeof WITHDRAWAL_REASONS)[number] }) {
+    const r = this.state.records[p.entry];
+    if (!r || r.kind !== "agreement") throw new Error("no sealed agreement of mine with this fingerprint (see symbolon_my_commitments)");
+    if (r.closed) throw new Error(`already closed on ${r.closed.at} as ${r.closed.outcome}`);
+    if (!(WITHDRAWAL_REASONS as readonly string[]).includes(p.reason)) throw new Error(`reason must be one of: ${WITHDRAWAL_REASONS.join(", ")}`);
+    const until = this.withdrawalUntil(r);
+    if (until === null) throw new Error(`this agreement gives no right of withdrawal (no clause ${WITHDRAWAL_CLAUSE})`);
+    if (this.now().getTime() >= until) throw new Error(`the withdrawal period ended on ${new Date(until).toISOString()}`);
+    const sealed = await this.sealAction({
+      instruction: `withdraw agreement ${p.entry}`,
+      action: "withdrawn",
+      details: { closes: p.entry, outcome: "withdrawn", reason: p.reason },
+    });
+    if (Date.parse(sealed.sealedAt) > until) throw new Error(`sealed at ${sealed.sealedAt}, after the end of the withdrawal period: the agreement stands`);
+    r.closed = { outcome: "withdrawn", at: sealed.sealedAt, entry: sealed.entry, by: "me" };
+    await this.persist();
+    await this.saveToOwnerArchive();
+    const proof = await this.createProof(sealed.entry, ["details"]);
+    return {
+      withdrawn: p.entry,
+      closing_entry: sealed.entry,
+      sealed_at: sealed.sealedAt,
+      form: { form: "withdrawal" as const, about: p.entry, reason: p.reason, proof: proof as unknown as Json },
+      next: "Send the form to the other agent (piazza_send_form), or give it the proof by any other channel.",
+    };
+  }
+
+  /**
+   * Records a withdrawal made by the other party, only after checking it: the proof must be sound, be signed by
+   * a party of this agreement other than me, say it withdraws this very agreement, and be sealed in time.
+   */
+  async recordWithdrawal(form: { about: string; proof: unknown }) {
+    const r = this.state.records[form?.about];
+    if (!r || r.kind !== "agreement") throw new Error("no sealed agreement of mine with this fingerprint");
+    if (r.closed) throw new Error(`already closed on ${r.closed.at} as ${r.closed.outcome}`);
+    const until = this.withdrawalUntil(r);
+    if (until === null) throw new Error(`this agreement gives no right of withdrawal (no clause ${WITHDRAWAL_CLAUSE})`);
+    const proof = form.proof as ProofBundle;
+    const report = await this.verify(proof);
+    const failed = report.checks.filter((c) => !c.ok);
+    // Under a mandate with a spending limit a withdrawal (no amount) is "incomplete" for that reason only: acceptable.
+    const otherGaps = report.gaps.filter((g) => !/amount not disclosed/.test(g));
+    if (failed.length || otherGaps.length) throw new Error(`the withdrawal proof does not hold: ${[...failed.map((c) => c.name), ...otherGaps].join("; ")}`);
+    const by = proof.record.body.parties[0]?.agent;
+    if (by === this.key.publicKey || !r.record.body.parties.some((x) => x.agent === by)) throw new Error("the withdrawal is not signed by the other party of this agreement");
+    const d = report.disclosed["details"] as { closes?: string; outcome?: string } | undefined;
+    if (d?.closes !== form.about || d?.outcome !== "withdrawn") throw new Error("the proof does not withdraw this agreement");
+    if (!report.sealedAt || Date.parse(report.sealedAt) > until) throw new Error(`withdrawn too late: sealed at ${report.sealedAt}, period ended ${new Date(until).toISOString()}`);
+    r.closed = { outcome: "withdrawn", at: report.sealedAt, entry: entryHash(proof.record), by: "counterparty" };
+    await this.persist();
+    await this.saveToOwnerArchive();
+    return { recorded: form.about, outcome: "withdrawn", by, sealed_at: report.sealedAt };
   }
 
   list() {

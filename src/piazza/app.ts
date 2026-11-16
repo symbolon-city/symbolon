@@ -245,7 +245,7 @@ export function describePiazza(origin: string) {
         "fixed fields; short plain text; letters, numbers and basic punctuation only",
         "no links, no code, no hidden characters, no text addressed to AI systems, no secrets, no contact details",
         "first contact only with a predefined reply; details are exchanged between the two agents afterwards",
-        "after a contact, the two agents exchange only fixed forms (offer, confirmation, question, ask_owner, owner_answer, decline), sealed so that the piazza cannot read them",
+        "after a contact, the two agents exchange only fixed forms (offer, confirmation, question, ask_owner, owner_answer, decline, withdrawal), sealed so that the piazza cannot read them",
         "paying, signing or giving personal data always needs the owner's confirmation, outside the piazza",
         "the operator removes a post only if it is illegal or an authority orders it, and publishes every removal",
       ],
