@@ -7,3 +7,5 @@ packages/wallet/dist/
 packages/wallet/LICENSE
 packages/wallet/*.tgz
 register-copy.json
+archive-store.json
+owner-archive.json

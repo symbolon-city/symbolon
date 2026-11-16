@@ -3,10 +3,12 @@
 //   SYMBOLON_REGISTER_KEY  the register's public key, fixed by you (known registers have it built in; any other
 //                          register without it is taken at its own word, and a warning is printed)
 //   SYMBOLON_PIAZZA_URL    piazza to use (default: the public test piazza; "none" turns the piazza tools off). PIAZZA_URL is still read.
+//   SYMBOLON_ARCHIVE_URL   your owner's archive of commitments (optional); with SYMBOLON_ARCHIVE_KEY, the archive key claim
+//                          (JSON, or a file containing it) printed by `npm run owner -- archive-key`
 //   SYMBOLON_HOME          where the wallet is kept (default ~/.symbolon; an existing ~/.accord is still used)
 //   SYMBOLON_WALLET_KEY    keychain (Mac, default) | dpapi (Windows, default) | passphrase (default elsewhere)
 //   SYMBOLON_WALLET_PASSWORD  the password, when SYMBOLON_WALLET_KEY=passphrase
-import { existsSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
@@ -39,11 +41,20 @@ const registerKey = process.env.SYMBOLON_REGISTER_KEY;
 const register = new HttpRegisterClient(url.replace(/\/+$/, ""), fetch, registerKey ? { key: registerKey } : {});
 if (!register.pinnedKey)
   console.error(`Warning: the key of register ${url} is not fixed; set SYMBOLON_REGISTER_KEY to the key published by its operator.`);
+/** The owner's archive of commitments, when both settings are given. */
+function archiveSetting() {
+  const url = process.env.SYMBOLON_ARCHIVE_URL;
+  const key = process.env.SYMBOLON_ARCHIVE_KEY;
+  if (!url || !key) return {};
+  const claim = JSON.parse(key.trim().startsWith("{") ? key : readFileSync(key, "utf8"));
+  return { archive: { url, claim } };
+}
 let wallet: Wallet;
 try {
   wallet = await Wallet.open(storage, register, {
     ownerResolver: httpOwnerResolver(),
     bitcoin: esploraProvider(),
+    ...archiveSetting(),
   });
 } catch (e) {
   console.error((e as Error).message);

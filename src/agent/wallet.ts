@@ -17,6 +17,7 @@ import { checkMandate, type CounterpartyCheck } from "../counterparty.js";
 import { answerChallenge, newChallenge, possessionProblem, type PossessionAnswer } from "../possession.js";
 import { revocationsOf, signersOf, subjectsOf } from "../revocation.js";
 import { checkStoredEnvelope, signEnvelope, type Action, type Envelope } from "../piazza/messages.js";
+import { archiveKeyProblem, makeSnapshot, type ArchiveKeyClaim } from "../archive.js";
 import { FORM_MEANING, boxKeyClaim, boxKeyClaimProblem, formProblem, newBoxSecret, openBox, sealBox, type BoxKeyClaim, type BoxSecret, type Form } from "../channel.js";
 
 export interface StoredRecord {
@@ -53,6 +54,8 @@ export interface WalletState {
   box?: BoxSecret;
   /** Piazzas (by origin) where this wallet's box key is published. */
   boxPublished?: string[];
+  /** The owner's archive of commitments: last snapshot number, and how the last save went. */
+  archive?: { seq: number; savedAt?: string; error?: string };
 }
 
 export interface WalletStorage {
@@ -92,6 +95,11 @@ export interface WalletOptions {
   bitcoin?: BlockProvider;
   now?: () => Date;
   charter?: string;
+  /**
+   * The owner's archive of commitments (src/archive.ts): after every change, the wallet sends there a snapshot
+   * sealed with the owner's archive key. A failed save never blocks the agent; it is shown in my commitments.
+   */
+  archive?: { url: string; claim: ArchiveKeyClaim; fetchImpl?: typeof fetch };
 }
 
 export class Wallet {
@@ -120,6 +128,33 @@ export class Wallet {
   }
   private async persist() {
     await this.storage.save(this.state);
+  }
+
+  /**
+   * Sends the owner's archive a sealed snapshot of this agent's commitments (see WalletOptions.archive).
+   * Best effort: the outcome is kept and shown, the agent's work goes on either way.
+   */
+  async saveToOwnerArchive(): Promise<{ saved: boolean; error?: string } | null> {
+    const a = this.opts.archive;
+    const m = this.state.mandate;
+    if (!a || !m) return null;
+    const seq = (this.state.archive?.seq ?? 0) + 1;
+    let error: string | undefined;
+    try {
+      const bad = archiveKeyProblem(a.claim, m);
+      if (bad) throw new Error(bad);
+      const { as_of: _ignored, ...commitments } = this.commitments();
+      const snap = await makeSnapshot(this.key, m, a.claim, seq, commitments as unknown as Json, this.now());
+      const res = await (a.fetchImpl ?? fetch)(a.url.replace(/\/+$/, "") + "/v1/snapshots", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(snap), signal: AbortSignal.timeout(10_000) });
+      if (!res.ok) throw new Error(`archive: HTTP ${res.status} ${((await res.json().catch(() => ({}))) as { error?: string }).error ?? ""}`.trim());
+    } catch (e) {
+      error = (e as Error).message;
+    }
+    // The number always moves on, so a save that arrived but whose answer was lost does not block the next ones.
+    const savedAt = error ? this.state.archive?.savedAt : this.now().toISOString();
+    this.state.archive = { seq, ...(savedAt ? { savedAt } : {}), ...(error ? { error } : {}) };
+    await this.persist();
+    return error ? { saved: false, error } : { saved: true };
   }
 
   get agentKey(): PublicKey {
@@ -363,6 +398,7 @@ export class Wallet {
     const mandates = [mine, p.counterparty];
     this.state.offers[opened.root] = { kind: "agreement", record, opened, mandates };
     await this.persist();
+    await this.saveToOwnerArchive();
     return { type: "accord/offer", record, opened, mandates };
   }
 
@@ -411,6 +447,7 @@ export class Wallet {
     const receipt = await this.register.append(entry);
     this.state.records[entry] = { kind: "agreement", record: signed, opened, mandates: [...theirMandates, mine], receipt };
     await this.persist();
+    await this.saveToOwnerArchive();
     return { entry, confirmation: { type: "accord/confirmation", record: signed, receipt }, counterparty: counterparties[0], counterparties };
   }
 
@@ -427,6 +464,7 @@ export class Wallet {
     this.state.records[entry] = { ...pending, record: c.record, receipt };
     delete this.state.offers[c.record.body.clausesRoot];
     await this.persist();
+    await this.saveToOwnerArchive();
     return { entry };
   }
 
@@ -486,6 +524,9 @@ export class Wallet {
       open,
       waiting,
       closed,
+      ...(this.opts.archive
+        ? { owner_archive: { url: this.opts.archive.url, last_saved_at: this.state.archive?.savedAt ?? null, ...(this.state.archive?.error ? { last_error: this.state.archive.error } : {}) } }
+        : {}),
       how_to_use:
         "These are the promises this agent made on behalf of its owner, kept in its wallet. Read them when you resume work. " +
         "When one is done (or cancelled by both sides, or not kept), close it with symbolon_close_commitment: the closing is sealed too.",
@@ -506,6 +547,7 @@ export class Wallet {
     });
     r.closed = { outcome: p.outcome, at: sealed.sealedAt, entry: sealed.entry };
     await this.persist();
+    await this.saveToOwnerArchive();
     return { closed: p.entry, outcome: p.outcome, closing_entry: sealed.entry, sealed_at: sealed.sealedAt };
   }
 
