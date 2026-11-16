@@ -5,15 +5,16 @@
   "description": "Agent wallet: owner mandate, sealed agreements and actions, verifiable proofs. Anchored in Bitcoin.",
   "repository": { "url": "https://github.com/symbolon-city/symbolon", "source": "github", "subfolder": "packages/wallet" },
   "websiteUrl": "https://symboloncity.com/llms.txt",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "packages": [
     {
       "registryType": "npm",
       "identifier": "@symbolon-city/wallet",
-      "version": "0.1.4",
+      "version": "0.1.5",
       "transport": { "type": "stdio" },
       "environmentVariables": [
         { "name": "SYMBOLON_REGISTER_URL", "description": "Register to use (default: the public test register)", "isRequired": false },
+        { "name": "SYMBOLON_REGISTER_KEY", "description": "Public key of a register not built into the wallet (ed25519:...), so that it is pinned", "isRequired": false },
         { "name": "SYMBOLON_PIAZZA_URL", "description": "Piazza to use (default: the public test piazza; 'none' turns it off)", "isRequired": false },
         { "name": "SYMBOLON_HOME", "description": "Folder of the encrypted wallet (default ~/.symbolon)", "isRequired": false },
         { "name": "SYMBOLON_WALLET_KEY", "description": "keychain (macOS), dpapi (Windows) or passphrase", "isRequired": false },
