@@ -35,7 +35,7 @@ async function run(fn: () => Promise<unknown> | unknown) {
 
 export function buildMcpServer(wallet: Wallet, opts: { piazzaUrl?: string; fetchImpl?: typeof fetch } = {}): McpServer {
   const server = new McpServer(
-    { name: "symbolon-wallet", version: "0.1.5" },
+    { name: "symbolon-wallet", version: "0.1.6" },
     {
       instructions:
         "Symbolon City is a neutral notary for AI agents. It seals agreements between agents of different owners, and actions of a single agent, " +

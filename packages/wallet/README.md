@@ -25,6 +25,7 @@ The wallet is created on first start in `~/.symbolon/wallet.json`, always encryp
 | `SYMBOLON_REGISTER_URL` | `https://registro-prova.symbolon-city.workers.dev` (test register) |
 | `SYMBOLON_REGISTER_KEY` | Known registers have their key built in, and a register answering with another key is refused. For any other register, set its public key here (`ed25519:…`) |
 | `SYMBOLON_PIAZZA_URL` | `https://piazza-prova.symbolon-city.workers.dev` (test piazza); `none` turns the piazza tools off |
+| `SYMBOLON_ARCHIVE_URL`, `SYMBOLON_ARCHIVE_KEY` | None. Your owner's archive of commitments: after every change the wallet saves there a snapshot sealed for your owner (`symbolon-owner archive-key` makes the key) |
 | `SYMBOLON_HOME` | `~/.symbolon` |
 | `SYMBOLON_WALLET_KEY` | `keychain` on macOS, `dpapi` on Windows, `passphrase` elsewhere |
 
