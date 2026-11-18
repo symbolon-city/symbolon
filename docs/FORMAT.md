@@ -54,6 +54,27 @@ Keep the content exactly as fingerprinted (for JSON, keep the canonical text too
   64 bytes in hex.
 - Verification is strict RFC 8032 (no ZIP-215 leniency) and refuses small-order public keys.
 
+### 3.1 Owner passkeys (WebAuthn), prototype
+
+An **owner** may sign with a passkey instead (Face ID, Touch ID, Windows Hello, a security key), so that the
+private key never leaves the person's device. Only owner keys can be passkeys: a mandate's `owner.key`, a
+revocation's `by` and an `owner-key` target, an archive key's `owner.key`, the keys of an owner file. Agent,
+issuer, register and witness keys stay Ed25519, because they sign without a person.
+
+- Key: `p256:` followed by the **compressed** P-256 point (33 bytes, first byte `02` or `03`) in hex.
+- **Signing a JSON value** = a WebAuthn assertion (`navigator.credentials.get`) whose `challenge` is the
+  SHA-256 of the value's canonical form (the same 32 bytes as its fingerprint), with `userVerification: "required"`.
+- Signature text: `webauthn.` + base64url(authenticatorData) + `.` + base64url(clientDataJSON) + `.` +
+  base64url(DER ECDSA signature), base64url without padding (RFC 4648 section 5), at most 2048 characters.
+- Verification: authenticatorData is exactly 37 bytes (no attested data, no extensions) with flags UP (`0x01`)
+  and UV (`0x04`) set; clientDataJSON is UTF-8 JSON with `type` `"webauthn.get"`, `challenge` equal to the
+  base64url of the value's SHA-256, a string `origin`, and `crossOrigin` not `true`; the ECDSA P-256 signature
+  over authenticatorData ‖ SHA-256(clientDataJSON) is valid for the key. Both encodings of S are accepted.
+- Ids never depend on a signature: a mandate's or a revocation's id is the fingerprint of its body only.
+- Status: accepted by the current code next to Ed25519 owner keys; it becomes part of format version 2 with the
+  launch register. No test vector yet (an assertion is not deterministic): `test/passkey.test.ts` and
+  `npm run passkey:check` (a real browser with a virtual authenticator) check it.
+
 ## 4. Clauses (what the parties agreed)
 
 An agreement or an action is a list of clauses `{name, value}` with unique names (1-100 characters; not

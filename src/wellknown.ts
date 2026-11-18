@@ -3,7 +3,7 @@
 // The earlier name of the file (/.well-known/accord.json, field "accord": 1) is still read,
 // so owners who published it before the rename keep working.
 
-import type { PublicKey } from "./keys.js";
+import { OWNER_KEY, type PublicKey } from "./keys.js";
 import { ownerDomainProblem } from "./mandate.js";
 
 export const WELL_KNOWN_PATH = "/.well-known/symbolon.json";
@@ -25,7 +25,6 @@ export type OwnerResolver = (domain: string) => Promise<PublicKey[] | null>;
 
 /** Limits of an owner file: anything bigger, slower or with more keys is refused (a hostile site must not stall the city). */
 export const OWNER_FILE_LIMITS: { maxBytes: number; timeoutMs: number; maxKeys: number } = { maxBytes: 16 * 1024, timeoutMs: 5_000, maxKeys: 10 };
-const KEY = /^ed25519:[0-9a-f]{64}$/;
 
 /** Reads at most maxBytes of a response body; null if it is longer. */
 async function readCapped(res: Response, maxBytes: number): Promise<string | null> {
@@ -70,7 +69,7 @@ export function httpOwnerResolver(fetchImpl: typeof fetch = fetch, limits: Parti
       if (!file || typeof file !== "object") return null;
       if ((file.symbolon !== 1 && file.accord !== 1) || file.domain !== domain || !Array.isArray(file.keys)) return null;
       // A handful of keys in the one accepted format, nothing else.
-      if (file.keys.length === 0 || file.keys.length > lim.maxKeys || file.keys.some((k) => typeof k !== "string" || !KEY.test(k))) return null;
+      if (file.keys.length === 0 || file.keys.length > lim.maxKeys || file.keys.some((k) => typeof k !== "string" || !OWNER_KEY.test(k))) return null;
       return [...new Set(file.keys as PublicKey[])];
     } catch {
       return null;

@@ -4,6 +4,7 @@
 import { anchorHead, upgradeAnchor, type Anchor } from "../anchor.js";
 import { allAttestations, fromOtsFile } from "../ots.js";
 import { fromBase64 } from "../bytes.js";
+import { OWNER_KEY } from "../keys.js";
 import type { Register } from "../register.js";
 import { revocationId, revocationProblem, revocationSubject, type RegisteredRevocation, type Revocation } from "../revocation.js";
 import { verifyCosignature, type Cosignature } from "../witness.js";
@@ -32,7 +33,7 @@ export interface AppDeps {
 export type WriteKind = "entry" | "revocation" | "cosignature";
 
 const HEX64 = /^[0-9a-f]{64}$/;
-const KEY = /^ed25519:[0-9a-f]{64}$/;
+const KEY = OWNER_KEY;
 const MAX_BODY = 8192;
 /** Revocations per page of GET /v1/revocations; `next` gives the following page. */
 export const REVOCATIONS_PAGE = 100;
@@ -190,9 +191,9 @@ async function route(req: Request, deps: AppDeps): Promise<Response> {
     if (req.method === "GET" && path === "/v1/revocations") {
       const subjects = [...new Set(url.searchParams.getAll("subject"))];
       if (!subjects.length || subjects.length > 10) return error(400, "give 1 to 10 subject parameters");
-      if (subjects.some((x) => !HEX64.test(x) && !KEY.test(x))) return error(400, "a subject is a mandate id (64 hex) or a key (ed25519:<64 hex>)");
+      if (subjects.some((x) => !HEX64.test(x) && !KEY.test(x))) return error(400, "a subject is a mandate id (64 hex) or a key (ed25519:<64 hex> or p256:<66 hex>)");
       const signers = [...new Set(url.searchParams.getAll("signer"))];
-      if (signers.length > 30 || signers.some((x) => !KEY.test(x))) return error(400, "give at most 30 signer parameters, each a key (ed25519:<64 hex>)");
+      if (signers.length > 30 || signers.some((x) => !KEY.test(x))) return error(400, "give at most 30 signer parameters, each a key (ed25519:<64 hex> or p256:<66 hex>)");
       const afterParam = url.searchParams.get("after");
       const after = afterParam === null ? -1 : intParam(afterParam, "after");
       const page = await extras.revocationsFor(subjects, { signers: signers.length ? signers : undefined, after, limit: REVOCATIONS_PAGE + 1 });

@@ -4,7 +4,7 @@
 
 import { randomBytes, toHex } from "./bytes.js";
 import { digest } from "./hash.js";
-import { signValue, verifyValue, type KeyPair, type PublicKey } from "./keys.js";
+import { AGENT_KEY, OWNER_KEY, signValue, verifyValue, type KeyPair, type PublicKey } from "./keys.js";
 
 export interface Amount {
   value: string; // decimal string, e.g. "50000.00"
@@ -65,11 +65,28 @@ export function createMandate(
   owner: KeyPair,
   params: Omit<MandateBody, "type" | "v" | "owner"> & { ownerDomain: string },
 ): Mandate {
+  const body = mandateBody(owner.publicKey, params);
+  return { body, signature: signValue(body, owner) };
+}
+
+/**
+ * The body of a mandate, checked, ready to be signed. For an owner who signs with a passkey: the page shows
+ * the body, the device signs passkeyChallenge(body), and signedMandate() puts the two together.
+ */
+export function mandateBody(ownerKey: PublicKey, params: Omit<MandateBody, "type" | "v" | "owner"> & { ownerDomain: string }): MandateBody {
   const { ownerDomain, ...rest } = params;
-  const body: MandateBody = { type: "accord/mandate", v: 1, owner: { domain: ownerDomain, key: owner.publicKey }, ...rest };
-  const m = { body, signature: signValue(body, owner) };
+  const body: MandateBody = { type: "accord/mandate", v: 1, owner: { domain: ownerDomain, key: ownerKey }, ...rest };
+  const problem = mandateProblem({ body, signature: "" });
+  if (problem) throw new Error(problem);
+  return body;
+}
+
+/** A mandate from a body and a signature made elsewhere (a passkey on the owner's device). Throws if the signature does not match. */
+export function signedMandate(body: MandateBody, signature: string): Mandate {
+  const m: Mandate = { body, signature };
   const problem = mandateProblem(m);
   if (problem) throw new Error(problem);
+  if (!verifyValue(body, signature, body.owner.key)) throw new Error("the signature is not the owner's signature of this mandate");
   return m;
 }
 
@@ -122,7 +139,6 @@ export function mandateId(m: Mandate): string {
   return digest(m.body);
 }
 
-const KEY = /^ed25519:[0-9a-f]{64}$/;
 const HEX64 = /^[0-9a-f]{64}$/;
 const BODY_FIELDS = ["type", "v", "owner", "agent", "scope", "maxAmount", "notBefore", "notAfter", "charter"];
 const SUB_FIELDS = ["type", "v", "parent", "issuer", "owner", "agent", "scope", "maxAmount", "total", "notBefore", "notAfter", "charter", "task"];
@@ -163,7 +179,7 @@ function oneProblem(x: Mandate, allowChain: boolean): string | null {
   if (!b.owner || typeof b.owner !== "object" || Object.keys(b.owner).some((k) => k !== "domain" && k !== "key")) return "invalid mandate owner";
   const bad = ownerDomainProblem(b.owner.domain);
   if (bad) return bad;
-  if (typeof b.owner.key !== "string" || !KEY.test(b.owner.key) || typeof b.agent !== "string" || !KEY.test(b.agent)) return "invalid key in mandate";
+  if (typeof b.owner.key !== "string" || !OWNER_KEY.test(b.owner.key) || typeof b.agent !== "string" || !AGENT_KEY.test(b.agent)) return "invalid key in mandate";
   if (typeof b.scope !== "string" || b.scope.length > MANDATE_LIMITS.scopeMaxChars) return `mandate scope must be a text of at most ${MANDATE_LIMITS.scopeMaxChars} characters`;
   if (typeof b.charter !== "string" || b.charter.length > MANDATE_LIMITS.charterMaxChars) return "invalid mandate charter";
   if (typeof b.notBefore !== "string" || typeof b.notAfter !== "string" || Number.isNaN(Date.parse(b.notBefore)) || Number.isNaN(Date.parse(b.notAfter)))
@@ -172,7 +188,7 @@ function oneProblem(x: Mandate, allowChain: boolean): string | null {
   if (sub) {
     const s = b as SubMandateBody;
     if (typeof s.parent !== "string" || !HEX64.test(s.parent)) return "invalid parent mandate id";
-    if (typeof s.issuer !== "string" || !KEY.test(s.issuer)) return "invalid issuer key";
+    if (typeof s.issuer !== "string" || !AGENT_KEY.test(s.issuer)) return "invalid issuer key";
     if (s.total !== undefined && amountProblem(s.total, "total")) return "invalid mandate total";
     if (s.task !== undefined) {
       const t = s.task;

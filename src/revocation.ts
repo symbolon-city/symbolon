@@ -12,11 +12,10 @@
 // A thief holding a stolen key can revoke it too, but cannot undo a revocation: there is no "unrevoke".
 
 import { digest } from "./hash.js";
-import { signValue, verifyValue, type KeyPair, type PublicKey } from "./keys.js";
+import { AGENT_KEY, OWNER_KEY, signValue, verifyValue, type KeyPair, type PublicKey } from "./keys.js";
 import { linksOf, mandateId, ownerDomainProblem, type Mandate } from "./mandate.js";
 
 const HEX64 = /^[0-9a-f]{64}$/;
-const KEY = /^ed25519:[0-9a-f]{64}$/;
 export const MAX_REASON = 200;
 
 export type RevocationTarget =
@@ -56,10 +55,24 @@ export function createRevocation(
   signer: KeyPair,
   p: { target: RevocationTarget; ownerDomain?: string; reason?: string; createdAt?: string },
 ): Revocation {
+  const body = revocationBody(signer.publicKey, p);
+  return { body, signature: signValue(body, signer) };
+}
+
+/** A revocation from a body and a signature made elsewhere (an owner's passkey). Throws if it does not hold. */
+export function signedRevocation(body: RevocationBody, signature: string): Revocation {
+  const r = { body, signature };
+  const problem = revocationProblem(r);
+  if (problem) throw new Error(problem);
+  return r;
+}
+
+/** The body of a revocation, checked, ready to be signed (by software or by a passkey: passkeyChallenge(body)). */
+export function revocationBody(by: PublicKey, p: { target: RevocationTarget; ownerDomain?: string; reason?: string; createdAt?: string }): RevocationBody {
   const body: RevocationBody = {
     type: "symbolon/revocation",
     v: 1,
-    by: signer.publicKey,
+    by,
     ...(p.ownerDomain ? { ownerDomain: p.ownerDomain } : {}),
     target: p.target,
     ...(p.reason ? { reason: p.reason } : {}),
@@ -67,7 +80,7 @@ export function createRevocation(
   };
   const problem = revocationProblem({ body, signature: "" }, { skipSignature: true });
   if (problem) throw new Error(problem);
-  return { body, signature: signValue(body, signer) };
+  return body;
 }
 
 /** The fingerprint sealed in the register: of the signed body only, so nothing outside it can make a second id. */
@@ -101,7 +114,7 @@ export function revocationProblem(r: Revocation, opts: { skipSignature?: boolean
   if (!b || typeof b !== "object") return "not a revocation";
   if (Object.keys(r).some((k) => k !== "body" && k !== "signature")) return "unexpected fields in revocation";
   if (b.type !== "symbolon/revocation" || b.v !== 1) return "not a revocation";
-  if (typeof b.by !== "string" || !KEY.test(b.by)) return "invalid signer key";
+  if (typeof b.by !== "string" || !OWNER_KEY.test(b.by)) return "invalid signer key";
   if (b.ownerDomain !== undefined && ownerDomainProblem(b.ownerDomain)) return "invalid owner domain";
   const t = b.target;
   if (!t || typeof t !== "object") return "invalid target";
@@ -109,7 +122,7 @@ export function revocationProblem(r: Revocation, opts: { skipSignature?: boolean
   if (t.kind === "mandate") {
     if (typeof t.id !== "string" || !HEX64.test(t.id)) return "invalid mandate id";
   } else if (t.kind === "agent" || t.kind === "owner-key") {
-    if (typeof t.key !== "string" || !KEY.test(t.key)) return "invalid target key";
+    if (typeof t.key !== "string" || !(t.kind === "agent" ? AGENT_KEY : OWNER_KEY).test(t.key)) return "invalid target key";
   } else return "invalid target";
   if (b.reason !== undefined && (typeof b.reason !== "string" || b.reason.length > MAX_REASON)) return `reason must be at most ${MAX_REASON} characters`;
   if (typeof b.createdAt !== "string" || Number.isNaN(Date.parse(b.createdAt))) return "invalid createdAt";
