@@ -17,6 +17,14 @@ const HEX64 = /^[0-9a-f]{64}$/;
 const KEY = /^ed25519:[0-9a-f]{64}$/;
 const BOX_KEY = /^x25519:[0-9a-f]{64}$/;
 
+/**
+ * A time written the only way the channel accepts it: ISO 8601 in UTC ("2026-11-30T12:00:00Z"). Looser forms
+ * (local dates, "10/12/2026", text around a date) are refused: they read differently in different places and
+ * can carry prose to the other agent.
+ */
+export const ISO_TIME = /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(\.\d{1,3})?Z$/;
+export const isIsoTime = (v: unknown): v is string => typeof v === "string" && ISO_TIME.test(v) && Number.isFinite(Date.parse(v));
+
 // ---------- box keys ----------
 
 export interface BoxSecret {
@@ -54,7 +62,7 @@ export function boxKeyClaimProblem(c: unknown, expectedAgent?: PublicKey): strin
     return "unexpected fields in box key claim";
   if (b.type !== "symbolon/box-key" || b.v !== 1) return "not a box key claim";
   if (typeof b.agent !== "string" || !KEY.test(b.agent) || typeof b.key !== "string" || !BOX_KEY.test(b.key)) return "invalid box key claim";
-  if (typeof b.createdAt !== "string" || Number.isNaN(Date.parse(b.createdAt))) return "invalid box key date";
+  if (!isIsoTime(b.createdAt)) return "invalid box key date (ISO 8601 in UTC)";
   if (expectedAgent && b.agent !== expectedAgent) return "the box key belongs to another agent";
   if (!verifyValue(b, x.signature, b.agent)) return "the box key is not signed by its agent";
   return null;
@@ -74,6 +82,8 @@ export interface Box {
 
 /** Largest box the piazza accepts (base64 characters of the ciphertext). */
 export const BOX_MAX_CHARS = 96_000;
+/** Sizes a box's content is padded to (characters). */
+const PAD_SIZES = [512, 2_048, 8_192, 16_384];
 
 export function boxProblem(b: unknown): string | null {
   const x = b as Box;
@@ -113,7 +123,10 @@ export async function sealBox(value: Json, recipientBoxKey: string, ctx: BoxCont
   const eph = await newBoxSecret();
   const key = await aesKey(await importPrivate(eph), recipient, eph.x, recipient);
   const iv = globalThis.crypto.getRandomValues(new Uint8Array(12));
-  const ct = new Uint8Array(await subtle.encrypt({ name: "AES-GCM", iv: bs(iv), additionalData: bs(aad(ctx)) }, key, bs(utf8(canonical(value)))));
+  // Padded to a few fixed sizes (spaces after the JSON), so the length of a box does not tell which form it holds.
+  const text = canonical(value);
+  const size = PAD_SIZES.find((n) => n >= text.length) ?? Math.ceil(text.length / 16_384) * 16_384;
+  const ct = new Uint8Array(await subtle.encrypt({ name: "AES-GCM", iv: bs(iv), additionalData: bs(aad(ctx)) }, key, bs(utf8(text + " ".repeat(size - text.length)))));
   return { v: 1, epk: eph.x, iv: toHex(iv), ct: toBase64(ct) };
 }
 
@@ -159,7 +172,19 @@ export type Form =
 
 export const FORM_NAMES = ["offer", "confirmation", "question", "ask_owner", "owner_answer", "decline", "withdrawal"] as const;
 
-const aboutOk = (a: unknown) => typeof a === "string" && (a === "general" || HEX64.test(a) || (a.length >= 1 && a.length <= 100 && /^[\p{L}\p{N} _.-]+$/u.test(a)));
+/** What a form is about: "general", an offer or agreement fingerprint, or a clause name (one short word, no spaces). */
+const aboutOk = (a: unknown) => typeof a === "string" && (a === "general" || HEX64.test(a) || /^[\p{L}][\p{L}\p{N}_.-]{0,39}$/u.test(a));
+/** Offers, confirmations and proofs are the wallets' own objects: limited in depth and size, checked in full on use. */
+export const FORM_LIMITS = { maxDepth: 12, maxChars: 64_000 } as const;
+function depthOf(v: unknown, d = 0): number {
+  if (d > FORM_LIMITS.maxDepth) return d;
+  if (!v || typeof v !== "object") return d;
+  let max = d;
+  for (const x of Object.values(v as object)) max = Math.max(max, depthOf(x, d + 1));
+  return max;
+}
+const objectShape = (v: unknown, keys: string[], type: string) =>
+  !!v && typeof v === "object" && !Array.isArray(v) && (v as { type?: unknown }).type === type && only(v as object, keys) && depthOf(v) <= FORM_LIMITS.maxDepth && canonical(v as Json).length <= FORM_LIMITS.maxChars;
 const only = (x: object, keys: string[]) => Object.keys(x).every((k) => keys.includes(k));
 const oneOf = (v: unknown, list: readonly string[]) => typeof v === "string" && list.includes(v);
 
@@ -169,17 +194,19 @@ export function formProblem(f: unknown, now = new Date()): string | null {
   if (!x || typeof x !== "object" || Array.isArray(x) || !oneOf(x.form, FORM_NAMES)) return `a form must be one of: ${FORM_NAMES.join(", ")}`;
   switch (x.form) {
     case "offer":
-      return only(x, ["form", "offer"]) && x.offer && typeof x.offer === "object" ? null : "an offer form carries only {form, offer}";
+      return only(x, ["form", "offer"]) && objectShape(x.offer, ["type", "record", "opened", "mandates"], "accord/offer") ? null : "an offer form carries only {form, offer} with a wallet offer";
     case "confirmation":
-      return only(x, ["form", "confirmation"]) && x.confirmation && typeof x.confirmation === "object" ? null : "a confirmation form carries only {form, confirmation}";
+      return only(x, ["form", "confirmation"]) && objectShape(x.confirmation, ["type", "record", "receipt"], "accord/confirmation")
+        ? null
+        : "a confirmation form carries only {form, confirmation} with a wallet confirmation";
     case "question":
       if (!only(x, ["form", "about", "ask"]) || !aboutOk(x.about)) return "a question carries only {form, about, ask}";
       return oneOf(x.ask, QUESTIONS) ? null : `ask must be one of: ${QUESTIONS.join(", ")}`;
     case "ask_owner": {
       if (!only(x, ["form", "about", "reason", "until"]) || !aboutOk(x.about)) return "ask_owner carries only {form, about, reason, until}";
       if (!oneOf(x.reason, ASK_OWNER_REASONS)) return `reason must be one of: ${ASK_OWNER_REASONS.join(", ")}`;
-      const t = typeof x.until === "string" ? Date.parse(x.until) : NaN;
-      if (!Number.isFinite(t) || t <= now.getTime() || t > now.getTime() + ASK_OWNER_MAX_DAYS * 86_400_000) return `until must be a time within the next ${ASK_OWNER_MAX_DAYS} days`;
+      const t = isIsoTime(x.until) ? Date.parse(x.until) : NaN;
+      if (!Number.isFinite(t) || t <= now.getTime() || t > now.getTime() + ASK_OWNER_MAX_DAYS * 86_400_000) return `until must be a time (ISO 8601 in UTC) within the next ${ASK_OWNER_MAX_DAYS} days`;
       return null;
     }
     case "owner_answer":
@@ -190,7 +217,8 @@ export function formProblem(f: unknown, now = new Date()): string | null {
       return oneOf(x.reason, DECLINE_REASONS) ? null : `reason must be one of: ${DECLINE_REASONS.join(", ")}`;
     case "withdrawal":
       if (!only(x, ["form", "about", "reason", "proof"]) || typeof x.about !== "string" || !HEX64.test(x.about)) return "a withdrawal carries only {form, about: <agreement fingerprint>, reason, proof}";
-      if (!x.proof || typeof x.proof !== "object") return "a withdrawal needs the proof of the sealed withdrawal";
+      if (!objectShape(x.proof, ["type", "v", "record", "mandates", "disclosures", "receipt", "cosignatures", "anchor"], "accord/proof"))
+        return "a withdrawal needs the proof of the sealed withdrawal";
       return oneOf(x.reason, WITHDRAWAL_REASONS) ? null : `reason must be one of: ${WITHDRAWAL_REASONS.join(", ")}`;
   }
   return "unknown form";
@@ -202,7 +230,7 @@ export const FORM_MEANING: Record<(typeof FORM_NAMES)[number], string> = {
   confirmation: "The other agent accepted your offer and sealed it. File it with symbolon_confirm_agreement.",
   question: "The other agent asks about a clause (or in general). Answer with a new offer, or decline.",
   ask_owner: "The other agent paused to ask its owner, until the given time. The negotiation is not over: wait for owner_answer, or for an offer made with its owner's approval of this agreement only (accept it as usual: your wallet checks the approval).",
-  owner_answer: "The other agent's owner decided: go_ahead (the negotiation continues) or declined.",
+  owner_answer: "The other agent reports its owner's decision (said by the agent, not signed by the owner): go_ahead (the negotiation continues) or declined. Only an offer carrying the owner's signed approval binds that owner.",
   decline: "The other agent declines, with a fixed reason.",
-  withdrawal: "The other agent withdraws from a sealed agreement within the agreed period. Check and record it with symbolon_record_withdrawal: your wallet verifies the proof and the date itself.",
+  withdrawal: "The other agent withdraws from a sealed agreement within the agreed period. Check and record it with symbolon_record_withdrawal: your wallet verifies the proof and the date itself, and refuses a withdrawal shown more than 2 days after the period ended.",
 };

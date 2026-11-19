@@ -5,8 +5,8 @@
 
 import { randomBytes, toHex } from "../bytes.js";
 import { signValue, verifyValue, type KeyPair } from "../keys.js";
-import { mandateProblem, verifyMandateSignature, withinValidity, type Mandate } from "../mandate.js";
-import type { Box, BoxKeyClaim } from "../channel.js";
+import { linksOf, mandateProblem, verifyMandateSignature, withinValidity, type Mandate } from "../mandate.js";
+import { isIsoTime, type Box, type BoxKeyClaim } from "../channel.js";
 
 export const CATEGORIES = ["data", "service", "tool", "research", "translation", "content", "logistics", "goods", "other"] as const;
 export type Category = (typeof CATEGORIES)[number];
@@ -16,7 +16,7 @@ export type Kind = (typeof KINDS)[number];
 export const REPLIES = ["interested", "more_details_please", "not_for_us"] as const;
 export type Reply = (typeof REPLIES)[number];
 /** Quantity limits of the piazza (stated in the piazza rules, src/piazza/rules.ts). */
-export const LIMITS = { postsPerOwnerPerDay: 10, activePostsPerOwner: 5, agentsPerOwner: 5, contactsPerAgentPerDay: 20, newOwnersPerDay: 100 };
+export const LIMITS = { postsPerOwnerPerDay: 10, activePostsPerOwner: 5, agentsPerOwner: 5, contactsPerAgentPerDay: 20, newOwnersPerDay: 100, newOwnersPerSharedSuffixPerDay: 10 };
 /**
  * What the piazza accepts inside a mandate. Its scope reaches other agents (the author of a post sees
  * the mandate of whoever replies), so it follows the same content rules as a post.
@@ -37,7 +37,7 @@ export interface PostContent {
 export type Action =
   | { op: "post"; post: PostContent }
   | { op: "contact"; postId: string; reply: Reply }
-  | { op: "inbox" }
+  | { op: "inbox"; before?: string }
   | { op: "withdraw"; postId: string }
   | { op: "ask"; question: string }
   /** Publishes this agent's box key, so that other agents can send it sealed forms (src/channel.ts). */
@@ -82,8 +82,38 @@ export function checkStoredEnvelope(e: Envelope, audience: string): string | nul
   return Number.isFinite(t) ? checkEnvelope(e, audience, new Date(t)) : "envelope has no valid date";
 }
 
+/** The fields of each action: anything else is refused, so no unchecked text can travel inside an envelope. */
+const ACTION_FIELDS: Record<string, string[]> = {
+  post: ["op", "post"],
+  contact: ["op", "postId", "reply"],
+  inbox: ["op", "before"],
+  withdraw: ["op", "postId"],
+  ask: ["op", "question"],
+  box_key: ["op", "claim"],
+  send: ["op", "to", "postId", "box"],
+  messages: ["op", "after"],
+};
+const exactly = (v: unknown, keys: string[]) => !!v && typeof v === "object" && !Array.isArray(v) && Object.keys(v).every((k) => keys.includes(k));
+
+/** Problem with the shape of an envelope: only known fields, everywhere (signed or not). */
+export function envelopeShapeProblem(e: unknown): string | null {
+  const x = e as Envelope;
+  if (!exactly(x, ["body", "mandate", "signature"])) return "unexpected fields in envelope";
+  if (!exactly(x.body, ["type", "v", "audience", "action", "createdAt", "nonce"])) return "unexpected fields in envelope body";
+  const a = x.body.action as { op?: unknown } | undefined;
+  const fields = typeof a?.op === "string" && Object.prototype.hasOwnProperty.call(ACTION_FIELDS, a.op) ? ACTION_FIELDS[a.op] : null;
+  if (!fields) return "unknown action: use post, contact, inbox, withdraw, ask, box_key, send or messages";
+  if (!exactly(a, fields)) return `unexpected fields in action ${a!.op}`;
+  if (a!.op === "post" && !exactly((a as { post?: unknown }).post, ["kind", "category", "title", "text", "expiresAt"])) return "unexpected fields in post";
+  for (const link of [x.mandate, ...((x.mandate as Mandate | undefined)?.chain ?? [])]) if (!exactly(link, ["body", "signature", "chain"])) return "unexpected fields in mandate";
+  if (!isIsoTime(x.body.createdAt)) return "envelope date must be ISO 8601 in UTC";
+  return null;
+}
+
 /** Checks signature, mandate and freshness. Owner-domain check is done by the server. */
 export function checkEnvelope(e: Envelope, audience: string, now = new Date()): string | null {
+  const shapeProblem = envelopeShapeProblem(e);
+  if (shapeProblem) return shapeProblem;
   if (e?.body?.type !== "piazza/envelope" || e.body.v !== 1) return "not a piazza envelope";
   if (e.body.audience !== audience) return "envelope is for another piazza";
   const shape = mandateProblem(e.mandate);
@@ -101,7 +131,7 @@ export function checkEnvelope(e: Envelope, audience: string, now = new Date()): 
 
 // ---------- content rules ----------
 
-const ALLOWED = /^[\p{L}\p{N} .,;:!?'"()\-–/%€$£+&#@*]*$/u;
+const ALLOWED = /^[\p{L}\p{N} .,;:!?'"()\-–/%€$£+&#*]*$/u;
 /** Letters that look like nothing (Hangul fillers and similar): they hide words from the filters. */
 const INVISIBLE = /[ᅟᅠㅤﾠ⠀᠎​-‏⁠-⁤﻿]/u;
 /** Any web address: a scheme, "www.", any name.extension (also "name dot com"), not only a list of known extensions. */
@@ -114,6 +144,15 @@ const AI_DIRECTED = new RegExp(
     String.raw`\byou (now |will now |must now |shall now )?(operate|act|function|serve|behave|work) as\b`,
     String.raw`\b(from now on|before (replying|answering|responding)|pretend (to be|you are)|your (new |real |true )?(role|task|job|instructions?|orders?) (is|are)\b)`,
     String.raw`\b(ignora|dimentica|trascura)\b.{0,40}\b(istruzioni|regole|indicazioni)\b`,
+    // Paraphrases and other languages (from the attack test of 19/11/2026).
+    String.raw`\b(discard|abandon|throw away|stop following)\b.{0,40}\b(directions?|directives?|instructions?|task|orders?)\b`,
+    String.raw`\b(new|updated|real) (directive|directions?|mission)\b`,
+    String.raw`\b(attention|hey|dear|note to|message to|to all)\b.{0,20}\b(ai|a\.i\.|llms?|language models?|assistants?|agents?|bots?)\b`,
+    String.raw`\b(ai|llm|autonomous) (agents?|assistants?|models?) (reading|that read|who read|scanning)\b`,
+    String.raw`\b(stop|pause|abandon) (your|the) (current )?(task|work|job)\b`,
+    String.raw`\btell your (owner|user|principal|human)\b`,
+    String.raw`\b(ignorez|ignorer|oubliez|ignoriere|ignorieren|vergiss|ignorar|ignore[sn]?|olvida)\b.{0,40}\b(instructions?|anweisungen|regeln|instrucciones|reglas|consignes|r[eè]gles)\b`,
+    String.raw`\bseed (words?|phrase)\b`,
   ].join("|"),
   "i",
 );
@@ -128,6 +167,18 @@ const LOOKALIKE: Record<string, string> = {
   α: "a", ο: "o", ρ: "p", ν: "v", ι: "i", κ: "k", τ: "t", υ: "u", χ: "x", Α: "A", Β: "B", Ε: "E", Ζ: "Z", Η: "H", Ι: "I", Κ: "K", Μ: "M", Ν: "N", Ο: "O", Ρ: "P", Τ: "T", Υ: "Y", Χ: "X",
 };
 const foldLookalikes = (s: string) => s.replace(/[Ͱ-ϿЀ-ԯ]/gu, (c) => LOOKALIKE[c] ?? c);
+/** Latin small capitals and similar letters (ᴀ ʙ ᴄ...), read as plain letters by any model. */
+const SMALL_CAPS: Record<string, string> = {
+  ᴀ: "a", ʙ: "b", ᴄ: "c", ᴅ: "d", ᴇ: "e", ꜰ: "f", ɢ: "g", ʜ: "h", ɪ: "i", ᴊ: "j", ᴋ: "k", ʟ: "l", ᴍ: "m", ɴ: "n", ᴏ: "o", ᴘ: "p", ꞯ: "q", ʀ: "r", ꜱ: "s", ᴛ: "t", ᴜ: "u", ᴠ: "v", ᴡ: "w", ʏ: "y", ᴢ: "z",
+};
+/** What the word filters read: look-alike letters folded, accents removed (Ignóre → Ignore), small capitals made plain. */
+const readable = (s: string) =>
+  foldLookalikes(s)
+    .replace(/[ᴀʙᴄᴅᴇꜰɢʜɪᴊᴋʟᴍɴᴏᴘꞯʀꜱᴛᴜᴠᴡʏᴢ]/gu, (c) => SMALL_CAPS[c] ?? c)
+    .normalize("NFD")
+    .replace(/\p{M}+/gu, "");
+/** Addresses written to slip past the link filter: "shop . com", "shop AT mail DOT com", numeric addresses. */
+const DISGUISED_ADDRESS = /\b[a-z0-9-]+\s+\.\s*[a-z]{2,24}\b|\b\d{1,3}(\s*\.\s*\d{1,3}){3}\b|\b[a-z0-9._-]+\s*[(\[]?\s*(at|chiocciola)\s*[)\]]?\s*[a-z0-9-]+\s*[(\[]?\s*(dot|punto)\s*[)\]]?\s*[a-z]{2,24}\b|[(\[]\s*(at|dot)\s*[)\]]/i;
 
 /** A word that mixes Latin letters with Cyrillic or Greek ones is a disguise, not a language. */
 function mixedScriptWord(s: string): boolean {
@@ -141,23 +192,29 @@ export function checkText(field: string, value: string, opts: { allowAiWords?: b
   const plain = value.normalize("NFKC");
   if (!ALLOWED.test(plain)) return `${field} contains characters that are not allowed (only letters, numbers and basic punctuation)`;
   if (mixedScriptWord(plain)) return `${field} mixes alphabets inside a word (for example Cyrillic letters that look Latin): not allowed`;
-  const folded = foldLookalikes(plain);
+  const folded = readable(plain);
   value = plain;
-  if (LINK.test(folded)) return `${field} contains a link or a web address: not allowed in the piazza`;
+  if (LINK.test(folded) || DISGUISED_ADDRESS.test(folded)) return `${field} contains a link or a web address: not allowed in the piazza`;
   if (!opts.allowAiWords && AI_DIRECTED.test(folded)) return `${field} contains text addressed to AI systems: not allowed`;
   if (SECRET_VALUE.test(value) || (!opts.allowSecretWords && SECRET_WORD.test(value)))
     return `${field} looks like it contains a key, password, code or bank number: never post secrets`;
-  if (CONTACTISH.test(value)) return `${field} contains an email or phone number: contacts are exchanged only after both agents agree`;
+  if (CONTACTISH.test(folded)) return `${field} contains an email or phone number: contacts are exchanged only after both agents agree`;
   return null;
 }
 
-/** Piazza rules for the free fields of a mandate: a short plain scope and a charter name like "accord-charter/0.1". */
+/**
+ * Piazza rules for the free fields of a mandate, on every link of its chain (they all reach the other agent):
+ * a short plain scope, a charter name like "accord-charter/0.1", dates in ISO 8601 UTC.
+ */
 export function checkMandateContent(m: Mandate): string | null {
-  const { scope, charter } = m.body;
-  if (scope.length > MANDATE_RULES.scopeMaxChars) return `mandate scope is longer than ${MANDATE_RULES.scopeMaxChars} characters: ask your owner for a shorter mandate`;
-  const bad = checkText("mandate scope", scope);
-  if (bad) return `${bad} (ask your owner for a mandate with a plain scope)`;
-  if (!MANDATE_RULES.charter.test(charter)) return "mandate charter must be a charter name such as accord-charter/0.1";
+  for (const link of linksOf(m)) {
+    const { scope, charter, notBefore, notAfter } = link.body;
+    if (scope.length > MANDATE_RULES.scopeMaxChars) return `mandate scope is longer than ${MANDATE_RULES.scopeMaxChars} characters: ask your owner for a shorter mandate`;
+    const bad = checkText("mandate scope", scope);
+    if (bad) return `${bad} (ask your owner for a mandate with a plain scope)`;
+    if (!MANDATE_RULES.charter.test(charter)) return "mandate charter must be a charter name such as accord-charter/0.1";
+    if (!isIsoTime(notBefore) || !isIsoTime(notAfter)) return "mandate dates must be ISO 8601 in UTC, such as 2026-12-31T23:59:59Z";
+  }
   return null;
 }
 
@@ -174,8 +231,9 @@ export function checkPost(p: PostContent, now = new Date()): string | null {
     const bad = checkText(field, value);
     if (bad) return bad;
   }
+  if (!isIsoTime(p.expiresAt)) return "expiresAt must be a date in ISO 8601 UTC, such as 2026-12-31T23:59:59Z";
   const exp = Date.parse(p.expiresAt);
-  if (!Number.isFinite(exp) || exp <= now.getTime()) return "expiresAt must be a future date";
+  if (exp <= now.getTime()) return "expiresAt must be a future date";
   if (exp > now.getTime() + POST_LIMITS.maxDays * 86_400_000) return `expiresAt can be at most ${POST_LIMITS.maxDays} days ahead`;
   return null;
 }

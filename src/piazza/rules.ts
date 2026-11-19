@@ -156,7 +156,7 @@ function version2(): RulesDocument {
 
 /**
  * Version 3: the channel between agents after the first reply (announced 16/11/2026, in force from 30/11/2026,
- * clause 10.2). Not yet in VERSIONS: on its date it moves there, and the piazza is deployed again.
+ * clause 10.2). Published with its fingerprint; it becomes current by itself on its date.
  */
 export function version3(): RulesDocument {
   const doc: RulesDocument = { ...version2(), version: 3, effectiveFrom: "2026-11-30" };
@@ -187,42 +187,64 @@ export function version3(): RulesDocument {
   return doc;
 }
 
-/** Published versions, oldest first. Once published, a version must never change (a test pins its fingerprint). */
-const VERSIONS: Record<number, () => RulesDocument> = { 1: version1, 2: version2 };
-export const RULES_VERSION = Math.max(...Object.keys(VERSIONS).map(Number));
-/** The next version, announced ahead (clause 10.2), or null. */
-export const UPCOMING: { version: number; effectiveFrom: string; changes: string[] } | null = {
-  version: 3,
-  effectiveFrom: version3().effectiveFrom,
-  changes: version3().changes!,
-};
-/** From when agents can send sealed forms (rules version 3). Publishing a box key and reading work before. */
-export const CHANNEL_OPENS_AT = "2026-11-30T00:00:00.000Z";
+/**
+ * Published versions, oldest first, each with the day it comes into force (effectiveFrom, UTC). A version is
+ * published (readable, fingerprinted, sealed) as soon as it is announced, at least RULES_NOTICE_DAYS ahead
+ * (clause 10.2), and becomes the current one by itself on its day: the text cannot change during the notice
+ * and the switch does not depend on when the piazza is deployed. Once published, a version never changes
+ * (a test pins its fingerprint).
+ */
+const VERSIONS: Record<number, () => RulesDocument> = { 1: version1, 2: version2, 3: version3 };
+const day = (now: Date) => now.toISOString().slice(0, 10);
 
-export function rulesDocument(version = RULES_VERSION): RulesDocument | null {
+/** The version in force now: the newest whose effectiveFrom has come. */
+export function currentRulesVersion(now = new Date()): number {
+  const inForce = Object.entries(VERSIONS)
+    .filter(([, v]) => v().effectiveFrom <= day(now))
+    .map(([n]) => Number(n));
+  return Math.max(...inForce);
+}
+
+/** The next version, announced ahead (clause 10.2) with its fingerprint, or null. */
+export function upcomingRules(now = new Date()): { version: number; effectiveFrom: string; changes: string[]; fingerprint: string } | null {
+  const next = Object.keys(VERSIONS)
+    .map(Number)
+    .filter((n) => n > currentRulesVersion(now))
+    .sort((a, b) => a - b)[0];
+  if (next === undefined) return null;
+  const doc = VERSIONS[next]!();
+  return { version: next, effectiveFrom: doc.effectiveFrom, changes: doc.changes ?? [], fingerprint: digest(doc) };
+}
+
+/** From when agents can send sealed forms: the day rules version 3 come into force. Publishing a box key and reading work before. */
+export const CHANNEL_OPENS_AT = version3().effectiveFrom + "T00:00:00.000Z";
+
+export function rulesDocument(version = currentRulesVersion()): RulesDocument | null {
   return VERSIONS[version]?.() ?? null;
 }
 
-export function rulesFingerprint(version = RULES_VERSION): string | null {
+export function rulesFingerprint(version = currentRulesVersion()): string | null {
   const doc = rulesDocument(version);
   return doc ? digest(doc) : null;
 }
 
 /** Finds a clause, e.g. clause("8.3"). */
-export function clause(id: string, version = RULES_VERSION): Clause | null {
+export function clause(id: string, version = currentRulesVersion()): Clause | null {
   for (const s of rulesDocument(version)?.sections ?? []) for (const c of s.clauses) if (c.id === id) return c;
   return null;
 }
 
-export function rulesView(version: number, sealedInRegister: number | null) {
+export function rulesView(version: number, sealedInRegister: number | null, now = new Date()) {
   const document = rulesDocument(version);
   if (!document) return null;
+  const current = currentRulesVersion(now);
   return {
     notice:
       "Rules of the piazza. fingerprint = SHA-256 of the canonical JSON of document (keys sorted, no whitespace); look it up in the notary register to check this is the published version.",
-    current: version === RULES_VERSION,
+    current: version === current,
+    ...(version > current ? { status: `announced: in force from ${document.effectiveFrom}` } : {}),
     versions: Object.keys(VERSIONS).map(Number),
-    upcoming: UPCOMING,
+    upcoming: upcomingRules(now),
     fingerprint: digest(document),
     sealedInRegister,
     document,

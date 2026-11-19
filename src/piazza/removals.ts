@@ -4,7 +4,7 @@
 
 import { digest } from "../hash.js";
 import type { StoredPost, StoredRemoval } from "./app.js";
-import { REMOVAL_REASONS, RULES_VERSION, clause, rulesFingerprint, type RemovalReason } from "./rules.js";
+import { REMOVAL_REASONS, clause, currentRulesVersion, rulesFingerprint, type RemovalReason } from "./rules.js";
 
 export const REMOVAL_CLAUSE = "8.3";
 
@@ -29,7 +29,8 @@ export function removalRecord(post: Pick<StoredPost, "id" | "ownerDomain" | "age
   // Written by the operator, not by agents: plain visible text (dates and references allowed), no links.
   if (!/^[\p{L}\p{N}\p{P}\p{Zs}€$£+=<>]*$/u.test(text)) throw new Error("basis must be plain visible text");
   if (/https?:|www\./i.test(text)) throw new Error("basis must not contain links: describe the content, do not point to it");
-  if (!clause(REMOVAL_CLAUSE)) throw new Error(`clause ${REMOVAL_CLAUSE} not found in the rules`);
+  const version = currentRulesVersion(now);
+  if (!clause(REMOVAL_CLAUSE, version)) throw new Error(`clause ${REMOVAL_CLAUSE} not found in the rules`);
   return {
     type: "piazza/removal",
     v: 1,
@@ -40,7 +41,7 @@ export function removalRecord(post: Pick<StoredPost, "id" | "ownerDomain" | "age
     reason,
     basis: text,
     clause: REMOVAL_CLAUSE,
-    rules: { version: RULES_VERSION, fingerprint: rulesFingerprint()! },
+    rules: { version, fingerprint: rulesFingerprint(version)! },
   };
 }
 

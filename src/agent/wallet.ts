@@ -36,7 +36,7 @@ import { answerChallenge, newChallenge, possessionProblem, type PossessionAnswer
 import { revocationsOf, signersOf, subjectsOf } from "../revocation.js";
 import { checkStoredEnvelope, signEnvelope, type Action, type Envelope } from "../piazza/messages.js";
 import { archiveKeyProblem, makeSnapshot, type ArchiveKeyClaim } from "../archive.js";
-import { FORM_MEANING, WITHDRAWAL_REASONS, boxKeyClaim, boxKeyClaimProblem, formProblem, newBoxSecret, openBox, sealBox, type BoxKeyClaim, type BoxSecret, type Form } from "../channel.js";
+import { FORM_MEANING, WITHDRAWAL_REASONS, isIsoTime, boxKeyClaim, boxKeyClaimProblem, formProblem, newBoxSecret, openBox, sealBox, type BoxKeyClaim, type BoxSecret, type Form } from "../channel.js";
 
 export interface StoredRecord {
   kind: "action" | "agreement";
@@ -53,6 +53,8 @@ export const COMMITMENT_OUTCOMES = ["fulfilled", "cancelled_by_agreement", "not_
 export type CommitmentOutcome = (typeof COMMITMENT_OUTCOMES)[number];
 /** The clause that gives both parties a right of withdrawal until the time it states (ISO 8601). */
 export const WITHDRAWAL_CLAUSE = "withdrawal_until";
+/** How long after the end of the withdrawal period a withdrawal sealed in time is still accepted when shown. */
+export const WITHDRAWAL_GRACE_MS = 48 * 3_600_000;
 
 /** Dates written in clause values (2026-11-17, or full ISO times, also inside intervals "a/b"), found anywhere inside. */
 function datesIn(value: Json, out: string[] = []): string[] {
@@ -78,7 +80,12 @@ export interface WalletState {
   archive?: { seq: number; savedAt?: string; error?: string };
   /** Agreements prepared above the mandate's limit, waiting for the owner's approval (by clause root). */
   approvals?: Record<string, PendingApproval>;
+  /** Sealed forms already opened (fingerprint of the signed envelope body -> first opened), kept SEEN_FORMS_DAYS. */
+  seenForms?: Record<string, string>;
 }
+
+/** How long forms are remembered, and the oldest form acted on (the piazza keeps forms 30 days). */
+export const SEEN_FORMS_DAYS = 31;
 
 /** An agreement prepared by this agent, shown to its owner for approval and not yet proposed. */
 export interface PendingApproval {
@@ -269,6 +276,7 @@ export class Wallet {
   async openForm(envelope: Envelope, piazza: string) {
     const bad = checkStoredEnvelope(envelope, piazza);
     if (bad) throw new Error(bad);
+    if (this.now().getTime() - Date.parse(envelope.body.createdAt) > SEEN_FORMS_DAYS * 86_400_000) throw new Error(`sent more than ${SEEN_FORMS_DAYS} days ago: too old to act on`);
     const a = envelope.body.action;
     if (a.op !== "send") throw new Error("not a sealed form");
     if (a.to !== this.key.publicKey) throw new Error("this form is addressed to another agent");
@@ -278,7 +286,18 @@ export class Wallet {
     if (problem) throw new Error(`the box holds something that is not a valid form (${problem}): ignored`);
     const sender = await this.checkCounterparty(envelope.mandate);
     const f = form as Form;
+    // The same signed form served again (by the piazza or anyone) is shown as a repeat, never as something new.
+    const seenKey = digest(envelope.body);
+    const nowMs = this.now().getTime();
+    const seen = (this.state.seenForms ??= {});
+    for (const [k, at] of Object.entries(seen)) if (nowMs - Date.parse(at) > SEEN_FORMS_DAYS * 86_400_000) delete seen[k];
+    const firstSeen = seen[seenKey];
+    if (!firstSeen) {
+      seen[seenKey] = this.now().toISOString();
+      await this.persist();
+    }
     return {
+      ...(firstSeen ? { repeated: `already opened on ${firstSeen}: not a new form` } : {}),
       from: { agent: from, owner: sender.owner, level: sender.level, ok: sender.ok, problems: sender.problems },
       postId: a.postId,
       sentAt: envelope.body.createdAt,
@@ -763,8 +782,8 @@ export class Wallet {
   /** The end of the withdrawal period of an agreement, or null if it has none. */
   private withdrawalUntil(r: StoredRecord): number | null {
     const v = clausesObject(r.opened)[WITHDRAWAL_CLAUSE];
-    const t = typeof v === "string" ? Date.parse(v) : NaN;
-    return Number.isFinite(t) ? t : null;
+    // Only an unambiguous time counts (agreements sealed before this rule with another format give no right).
+    return isIsoTime(v) ? Date.parse(v) : null;
   }
 
   /**
@@ -788,7 +807,7 @@ export class Wallet {
     r.closed = { outcome: "withdrawn", at: sealed.sealedAt, entry: sealed.entry, by: "me" };
     await this.persist();
     await this.saveToOwnerArchive();
-    const proof = await this.createProof(sealed.entry, ["details"]);
+    const proof = await this.createProof(sealed.entry, ["action", "details"]);
     return {
       withdrawn: p.entry,
       closing_entry: sealed.entry,
@@ -814,11 +833,17 @@ export class Wallet {
     // Under a mandate with a spending limit a withdrawal (no amount) is "incomplete" for that reason only: acceptable.
     const otherGaps = report.gaps.filter((g) => !/amount not disclosed/.test(g));
     if (failed.length || otherGaps.length) throw new Error(`the withdrawal proof does not hold: ${[...failed.map((c) => c.name), ...otherGaps].join("; ")}`);
+    // It must be a sealed action of one agent that says "withdrawn": not any other record that happens to mention it.
+    if (proof.record?.body?.type !== "accord/action" || proof.record.body.parties.length !== 1) throw new Error("the proof is not a withdrawal (a sealed action of the other party)");
+    if (report.disclosed["action"] !== "withdrawn") throw new Error("the proof does not show the action 'withdrawn'");
     const by = proof.record.body.parties[0]?.agent;
     if (by === this.key.publicKey || !r.record.body.parties.some((x) => x.agent === by)) throw new Error("the withdrawal is not signed by the other party of this agreement");
     const d = report.disclosed["details"] as { closes?: string; outcome?: string } | undefined;
     if (d?.closes !== form.about || d?.outcome !== "withdrawn") throw new Error("the proof does not withdraw this agreement");
     if (!report.sealedAt || Date.parse(report.sealedAt) > until) throw new Error(`withdrawn too late: sealed at ${report.sealedAt}, period ended ${new Date(until).toISOString()}`);
+    // A withdrawal kept back and shown long after the period would let a party back out after the other performed.
+    if (this.now().getTime() > until + WITHDRAWAL_GRACE_MS)
+      throw new Error(`shown too late: a withdrawal must reach the other party within ${WITHDRAWAL_GRACE_MS / 3_600_000} hours after the period ended (${new Date(until).toISOString()})`);
     r.closed = { outcome: "withdrawn", at: report.sealedAt, entry: entryHash(proof.record), by: "counterparty" };
     await this.persist();
     await this.saveToOwnerArchive();
@@ -917,7 +942,14 @@ export class Wallet {
    * would dodge the limit. Strings like "999999 EUR" inside free text cannot be told apart from prose: the
    * full fix (amount as a field of the signed record, the only price that binds) comes with the launch register.
    */
+  /** The right of withdrawal needs one unambiguous end: ISO 8601 in UTC, read the same everywhere. */
+  private checkWithdrawalClause(clauses: Record<string, Json>) {
+    if (Object.prototype.hasOwnProperty.call(clauses, WITHDRAWAL_CLAUSE) && !isIsoTime(clauses[WITHDRAWAL_CLAUSE]))
+      throw new Error(`the clause ${WITHDRAWAL_CLAUSE} must be a time in ISO 8601 UTC, such as 2026-12-10T23:59:59Z`);
+  }
+
   private checkAmount(clauses: Record<string, Json>, m: Mandate, mine = false) {
+    this.checkWithdrawalClause(clauses);
     const has = Object.prototype.hasOwnProperty.call(clauses, "amount");
     const amount = (has ? clauses["amount"] : undefined) as unknown as Amount | undefined;
     const max = spendingLimit(m);

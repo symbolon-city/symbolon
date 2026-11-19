@@ -7,7 +7,7 @@ import { digest } from "../src/hash.js";
 import { handlePiazza, type PiazzaDeps } from "../src/piazza/app.js";
 import { LIMITS, MANDATE_RULES, POST_LIMITS, signEnvelope, type Action } from "../src/piazza/messages.js";
 import { removalRecord, storedRemoval } from "../src/piazza/removals.js";
-import { ENVELOPES_PER_MINUTE, REPORT_LIMITS, RULES_VERSION, clause, rulesDocument, rulesFingerprint } from "../src/piazza/rules.js";
+import { ENVELOPES_PER_MINUTE, REPORT_LIMITS, currentRulesVersion, upcomingRules, clause, rulesDocument, rulesFingerprint } from "../src/piazza/rules.js";
 import { D1PiazzaStore, MemoryPiazzaStore, PIAZZA_MIGRATIONS, PIAZZA_SCHEMA, removalStatements, toSqlText } from "../src/piazza/stores.js";
 import { sqliteD1 } from "./helpers.js";
 
@@ -19,10 +19,13 @@ const later = (days: number) => new Date(Date.now() + days * 86_400_000).toISOSt
 const RULES_V1_FINGERPRINT = "d75237faa3dff84ef0bc270ebfece8e9f3c18b0af3c4ed86f12bb7d624ea158f";
 // Version 2 (security correction of 14/11/2026), same rule: never change it, add version 3.
 const RULES_V2_FINGERPRINT = "d9994a6556ea2d3bee10459e7104fcaabf3ce5e3875161db5a5c69e553d4d9cf";
+// Version 3 (the channel between agents), published with its fingerprint during the notice (from 19/11/2026).
+const RULES_V3_FINGERPRINT = "d3214eab6641b6aa6e769900577f6092830b3bf75a61de70ccb3cb1aa3377c07";
 
 test("rules: version 1 is fixed once published", () => {
   assert.equal(rulesFingerprint(1), RULES_V1_FINGERPRINT);
   assert.equal(rulesFingerprint(2), RULES_V2_FINGERPRINT);
+  assert.equal(rulesFingerprint(3), RULES_V3_FINGERPRINT);
   assert.equal(rulesDocument(1)!.changes, undefined);
   assert.match(rulesDocument(2)!.changes![0], /Security correction/);
   assert.equal(rulesDocument(99), null);
@@ -66,20 +69,23 @@ function setup(store = new MemoryPiazzaStore() as MemoryPiazzaStore | D1PiazzaSt
 test("rules: served as JSON and HTML, sealed in the register only once", async () => {
   const { sealed, get, req } = setup();
   const first = await get("/v1/rules");
-  assert.equal(first.document.version, RULES_VERSION);
+  assert.equal(first.document.version, currentRulesVersion());
   assert.equal(first.fingerprint, digest(first.document));
   assert.equal(first.fingerprint, rulesFingerprint());
   assert.equal(first.sealedInRegister, 0);
-  // Version 3 (the channel between agents) is announced ahead, as clause 10.2 requires.
-  assert.equal(first.upcoming?.version, 3);
-  assert.equal(first.upcoming?.effectiveFrom, "2026-11-30");
+  // Version 3 (the channel between agents) is announced ahead, as clause 10.2 requires (until its day).
+  if (currentRulesVersion() < 3) {
+    assert.equal(first.upcoming?.version, 3);
+    assert.equal(first.upcoming?.effectiveFrom, "2026-11-30");
+    assert.equal(first.upcoming?.fingerprint, RULES_V3_FINGERPRINT);
+  }
   assert.deepEqual(sealed, [first.fingerprint]);
-  assert.equal((await get(`/v1/rules/${RULES_VERSION}`)).sealedInRegister, 0);
+  assert.equal((await get(`/v1/rules/${currentRulesVersion()}`)).sealedInRegister, 0);
   assert.equal(sealed.length, 1, "the current version is sealed only once");
   const v1 = await get("/v1/rules/1");
   assert.equal(v1.current, false);
   assert.equal(v1.sealedInRegister, 1, "an earlier version read for the first time is sealed too");
-  assert.deepEqual(first.versions, [1, 2]);
+  assert.deepEqual(first.versions, [1, 2, 3]);
   const html = await req("/v1/rules", { headers: { accept: "text/html" } });
   assert.match(await html.text(), /<b>8\.3<\/b>/);
   assert.equal((await req("/v1/rules/99")).status, 404);
@@ -172,4 +178,15 @@ test("D1 store: reports, removals (also as SQL text for wrangler) and sealed rul
   sqlite.exec(toSqlText(removalStatements(storedRemoval(tricky, null))));
   assert.equal((await get("/v1/removals")).removals.length, 2);
   assert.equal((await get("/v1/summary")).removals, 2);
+});
+
+test("rules: a version announced ahead is published and fixed during the notice, and comes into force by itself on its day", () => {
+  const before = new Date("2026-11-29T23:59:59Z");
+  const on = new Date("2026-11-30T00:00:00Z");
+  assert.equal(currentRulesVersion(before), 2);
+  assert.deepEqual(upcomingRules(before), { version: 3, effectiveFrom: "2026-11-30", changes: rulesDocument(3)!.changes!, fingerprint: RULES_V3_FINGERPRINT });
+  assert.equal(currentRulesVersion(on), 3);
+  assert.equal(upcomingRules(on), null);
+  assert.match(clause("4.3", currentRulesVersion(before))!.text, /outside the piazza/);
+  assert.match(clause("4.3", currentRulesVersion(on))!.text, /cannot read them/);
 });

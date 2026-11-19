@@ -94,13 +94,15 @@ export class MemoryPiazzaStore implements PiazzaStore {
   async countContactsByAgent(agent: string, since: string) {
     return this.contacts.filter((c) => c.fromAgent === agent && c.createdAt >= since).length;
   }
-  async inbox(agent: string) {
+  async inbox(agent: string, before?: string) {
     return this.contacts
-      .filter((c) => this.postsById.get(c.postId)?.agent === agent)
+      .filter((c) => this.postsById.get(c.postId)?.agent === agent && (!before || c.createdAt < before))
+      .sort((a, b) => b.createdAt.localeCompare(a.createdAt))
+      .slice(0, 200)
       .map((c) => ({ ...c, postTitle: this.postsById.get(c.postId)!.content.title }));
   }
   async hasContact(postId: string, agent: string) {
-    return this.contacts.some((c) => c.postId === postId && c.fromAgent === agent);
+    return this.contacts.some((c) => c.postId === postId && c.fromAgent === agent && c.reply !== "not_for_us");
   }
   private boxKeys = new Map<string, BoxKeyClaim>();
   private messages: StoredMessage[] = [];
@@ -217,10 +219,13 @@ export class D1PiazzaStore implements PiazzaStore {
   async useNonce(nonce: string, at: string) {
     try {
       await this.db.prepare("INSERT INTO nonces (nonce, at) VALUES (?, ?)").bind(nonce, at).run();
-      return true;
     } catch {
       return false;
     }
+    // Now and then, forget nonces older than an hour: envelopes older than a few minutes are refused anyway.
+    if (Math.random() < 0.01)
+      await this.db.prepare("DELETE FROM nonces WHERE at < ?").bind(new Date(Date.parse(at) - 3_600_000).toISOString()).run().catch(() => {});
+    return true;
   }
   async addPost(p: StoredPost) {
     await this.db
@@ -299,10 +304,10 @@ export class D1PiazzaStore implements PiazzaStore {
     const r = await this.db.prepare("SELECT COUNT(*) AS n FROM contacts WHERE from_agent = ? AND created_at >= ?").bind(agent, since).first<{ n: number }>();
     return r?.n ?? 0;
   }
-  async inbox(agent: string) {
+  async inbox(agent: string, before?: string) {
     const r = await this.db
-      .prepare("SELECT c.*, p.content AS post_content FROM contacts c JOIN posts p ON p.id = c.post_id WHERE p.agent = ? ORDER BY c.created_at DESC LIMIT 200")
-      .bind(agent)
+      .prepare("SELECT c.*, p.content AS post_content FROM contacts c JOIN posts p ON p.id = c.post_id WHERE p.agent = ? AND (? IS NULL OR c.created_at < ?) ORDER BY c.created_at DESC LIMIT 200")
+      .bind(agent, before ?? null, before ?? null)
       .all<{ post_id: string; from_agent: string; from_owner: string; mandate: string; reply: string; created_at: string; post_content: string }>();
     return r.results.map((x) => ({
       postId: x.post_id,
@@ -315,7 +320,7 @@ export class D1PiazzaStore implements PiazzaStore {
     }));
   }
   async hasContact(postId: string, agent: string) {
-    return !!(await this.db.prepare("SELECT 1 AS x FROM contacts WHERE post_id = ? AND from_agent = ?").bind(postId, agent).first<{ x: number }>());
+    return !!(await this.db.prepare("SELECT 1 AS x FROM contacts WHERE post_id = ? AND from_agent = ? AND reply != 'not_for_us'").bind(postId, agent).first<{ x: number }>());
   }
   async putBoxKey(agent: string, claim: BoxKeyClaim, at: string) {
     await this.db.prepare("INSERT OR REPLACE INTO box_keys (agent, claim, updated_at) VALUES (?, ?, ?)").bind(agent, JSON.stringify(claim), at).run();
