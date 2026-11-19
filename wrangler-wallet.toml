@@ -1,0 +1,36 @@
+# The hosted wallet ("the connector"): NOT ONLINE YET. Before the first deploy: Andrea's go, the full attack
+# test, `wrangler secret put WALLET_SECRET` (32 random bytes, base64url), and the route below uncommented.
+name = "portafoglio-prova"
+main = "worker/wallet-worker.ts"
+compatibility_date = "2026-10-01"
+compatibility_flags = ["nodejs_compat"]
+workers_dev = false
+
+# routes = [{ pattern = "wallet.symboloncity.com", custom_domain = true }]
+
+[[durable_objects.bindings]]
+name = "WALLET"
+class_name = "WalletHome"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["WalletHome"]
+
+[[services]]
+binding = "REGISTER"
+service = "registro-prova"
+
+[[services]]
+binding = "PIAZZA"
+service = "piazza-prova"
+
+# Anti-spam: at most 60 POST requests per minute per client.
+[[ratelimits]]
+name = "WALLET_LIMIT"
+namespace_id = "1004"
+simple = { limit = 60, period = 60 }
+
+[vars]
+ORIGIN = "https://wallet.symboloncity.com"
+REGISTER_URL = "https://registro-prova.symbolon-city.workers.dev"
+PIAZZA_URL = "https://piazza-prova.symbolon-city.workers.dev"

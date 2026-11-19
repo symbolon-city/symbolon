@@ -33,7 +33,21 @@ async function run(fn: () => Promise<unknown> | unknown) {
   }
 }
 
-export function buildMcpServer(wallet: Wallet, opts: { piazzaUrl?: string; fetchImpl?: typeof fetch } = {}): McpServer {
+/**
+ * A wallet hosted for its owner (src/hosted): the owner signs on the wallet's own page with Face ID, so the agent
+ * gets a link to give the owner instead of things to sign.
+ */
+export interface HostedOwner {
+  /** The owner's key (the passkey the owner signs in with): the only owner this wallet's agent may act for. */
+  ownerKey: string;
+  /** A link to the page where the owner sees and signs the approval of this agreement. */
+  approvalLink(clausesRoot: string, validUntil: string): Promise<string>;
+  /** Prepares a mandate for the owner to sign on the page; returns the link and what the owner will read. */
+  askMandate(p: { scope: string; maxAmount?: Amount; days: number }): Promise<{ owner_page: string; for_the_owner: unknown }>;
+}
+
+export function buildMcpServer(wallet: Wallet, opts: { piazzaUrl?: string; fetchImpl?: typeof fetch; hosted?: HostedOwner } = {}): McpServer {
+  const hosted = opts.hosted;
   const server = new McpServer(
     { name: "symbolon-wallet", version: "0.1.7" },
     {
@@ -65,8 +79,33 @@ export function buildMcpServer(wallet: Wallet, opts: { piazzaUrl?: string; fetch
       description: "Installs the mandate signed by this agent's owner. Required before sealing anything. The mandate must name this agent's key.",
       inputSchema: { mandate: jsonObject },
     },
-    ({ mandate }) => run(() => wallet.installMandate(mandate as unknown as Mandate)),
+    ({ mandate }) =>
+      run(() => {
+        const m = mandate as unknown as Mandate;
+        if (hosted && m?.body?.owner?.key !== hosted.ownerKey)
+          throw new Error("this wallet is hosted for its owner: it takes only mandates signed by the owner's own key (ask with symbolon_ask_owner_for_mandate)");
+        return wallet.installMandate(m);
+      }),
   );
+
+  if (hosted)
+    server.registerTool(
+      "symbolon_ask_owner_for_mandate",
+      {
+        title: "Ask your owner for a mandate",
+        description:
+          "This wallet is hosted for your owner, who signs with Face ID or a passkey on the wallet's page. When your owner tells you what you may do " +
+          "(e.g. 'accept restoration jobs up to 2000 EUR for three months'), prepare the mandate here with those words and limits, then give your owner the link. " +
+          "The owner reads the mandate on that page and signs it, or not; nothing is valid until then (check with symbolon_whoami). " +
+          "Write the scope in the owner's own terms and never wider than what they said.",
+        inputSchema: {
+          scope: z.string().min(3).max(500).describe("What you may agree to, in plain words, as your owner said it"),
+          max_amount: jsonObject.optional().describe("Highest amount per agreement {value: '2000.00', currency: 'EUR'}, if your owner gave one"),
+          days: z.number().int().min(1).max(366).describe("How many days the mandate lasts"),
+        },
+      },
+      ({ scope, max_amount, days }) => run(() => hosted.askMandate({ scope, maxAmount: max_amount as unknown as Amount | undefined, days })),
+    );
 
   server.registerTool(
     "symbolon_check_counterparty",
@@ -194,9 +233,19 @@ export function buildMcpServer(wallet: Wallet, opts: { piazzaUrl?: string; fetch
       },
     },
     ({ counterparty_mandate, clauses, hours, allow_unverified_owner }) =>
-      run(() =>
-        wallet.requestApproval({ counterparty: counterparty_mandate as unknown as Mandate, clauses: clauses as Record<string, Json>, hours, allowUnverifiedOwner: allow_unverified_owner }),
-      ),
+      run(async () => {
+        const r = await wallet.requestApproval({ counterparty: counterparty_mandate as unknown as Mandate, clauses: clauses as Record<string, Json>, hours, allowUnverifiedOwner: allow_unverified_owner });
+        if (!hosted) return r;
+        const { approval_body, clauses_root, for_the_owner } = r;
+        return {
+          clauses_root,
+          for_the_owner,
+          owner_page: await hosted.approvalLink(clauses_root, approval_body.notAfter),
+          next:
+            "Give your owner the owner_page link with the short text of for_the_owner. On that page the owner reads the exact clauses and approves with Face ID (or does nothing, and the request expires). " +
+            "Then call symbolon_propose_approved_agreement with clauses_root only: it tells you if the owner has not approved yet.",
+        };
+      }),
   );
 
   server.registerTool(
@@ -204,7 +253,7 @@ export function buildMcpServer(wallet: Wallet, opts: { piazzaUrl?: string; fetch
     {
       title: "Propose an agreement your owner approved",
       description:
-        "After symbolon_request_owner_approval and your owner's signature: checks the approval (signed by your owner's key, exactly what was shown, still valid, not revoked) " +
+        "After symbolon_request_owner_approval and your owner's signature (on a hosted wallet the owner signs on its page: give clauses_root only): checks the approval (signed by your owner's key, exactly what was shown, still valid, not revoked) " +
         "and creates and signs the agreement with it. Returns an offer to send to the counterparty, whose wallet checks that the approval is for this very agreement.",
       inputSchema: {
         clauses_root: z.string().regex(/^[0-9a-f]{64}$/).optional().describe("From symbolon_request_owner_approval, together with signature"),

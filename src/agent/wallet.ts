@@ -86,6 +86,8 @@ export interface PendingApproval {
   /** Exactly what the owner is asked to sign. */
   body: MandateBody;
   allowUnverifiedOwner?: boolean;
+  /** The owner's signature of body, when the owner signed it on a page of the wallet (hosted wallet). */
+  signature?: string;
 }
 
 /** True if this mandate is the owner's approval of one agreement only. */
@@ -571,12 +573,46 @@ export class Wallet {
     };
   }
 
+  /** Agreements waiting for the owner's approval: what a page shows the owner (clauses recomputed from their root). */
+  pendingApprovals() {
+    return Object.entries(this.state.approvals ?? {}).map(([root, a]) => {
+      if (!verifyOpened(a.opened) || a.opened.root !== root || a.body.agreement?.clausesRoot !== root)
+        throw new Error("a stored approval request does not match its clauses");
+      return {
+        clauses_root: root,
+        approval_body: a.body,
+        clauses: clausesObject(a.opened),
+        counterparty: { agent: a.counterparty.body.agent, owner: ownerName(a.counterparty.body.owner), scope: a.counterparty.body.scope },
+        general_limit: this.state.mandate ? (spendingLimit(this.state.mandate) ?? null) : null,
+        signed: !!a.signature,
+      };
+    });
+  }
+
+  /**
+   * Files the owner's signature of a pending approval (signed on the wallet's own page), so that the agent can
+   * then propose it with the clause root only. Checked now: signed by my owner's key, exactly this body.
+   */
+  async recordOwnerApproval(root: string, signature: string) {
+    const pending = this.state.approvals?.[root];
+    if (!pending) throw new Error("no approval request of mine matches");
+    const approval: Mandate = { body: pending.body, signature };
+    const shape = mandateProblem(approval);
+    if (shape) throw new Error(`the approval is malformed: ${shape}`);
+    if (approval.body.owner.key !== this.myMandate().body.owner.key) throw new Error("the approval must be signed by the owner of my mandate");
+    if (!verifyMandateSignature(approval)) throw new Error("the approval is not signed by my owner's key (or it was changed)");
+    pending.signature = signature;
+    await this.persist();
+  }
+
   /** Proposes an agreement prepared with requestApproval(), once the owner has signed the approval. */
   async proposeApproved(p: { approval?: Mandate; clausesRoot?: string; signature?: string }): Promise<Offer> {
     const root = p.approval?.body?.type === "accord/mandate" ? p.approval.body.agreement?.clausesRoot : p.clausesRoot;
     const pending = root ? this.state.approvals?.[root] : undefined;
     if (!pending || !root) throw new Error("no approval request of mine matches: first ask with symbolon_request_owner_approval");
-    const approval: Mandate = p.approval ? { body: p.approval.body, signature: p.approval.signature } : { body: pending.body, signature: p.signature ?? "" };
+    const signature = p.signature ?? pending.signature;
+    if (!p.approval && !signature) throw new Error("your owner has not approved this agreement yet");
+    const approval: Mandate = p.approval ? { body: p.approval.body, signature: p.approval.signature } : { body: pending.body, signature: signature ?? "" };
     const shape = mandateProblem(approval);
     if (shape) throw new Error(`the approval is malformed: ${shape}`);
     if (canonical(approval.body) !== canonical(pending.body)) throw new Error("the approval differs from what was shown to the owner");

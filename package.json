@@ -23,7 +23,8 @@
     "format:vectors": "tsx scripts/format-vectors.ts",
     "register:copy": "tsx scripts/register-copy.ts",
     "archive:serve": "tsx scripts/archive-server.ts",
-    "passkey:check": "tsx scripts/passkey-browser-check.ts"
+    "passkey:check": "tsx scripts/passkey-browser-check.ts",
+    "hosted:check": "tsx scripts/hosted-browser-check.ts"
   },
   "license": "Apache-2.0",
   "dependencies": {
