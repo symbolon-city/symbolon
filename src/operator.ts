@@ -115,7 +115,8 @@ export class Operator {
   }
 
   get domain(): string {
-    return this.o.issuingMandate.body.owner.domain;
+    // setupOperator always writes a domain: an operator answers for its customers' agents under its name.
+    return this.o.issuingMandate.body.owner.domain ?? "";
   }
 
   private now() {

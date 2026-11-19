@@ -7,7 +7,7 @@ import { canonical, type Json } from "../canonical.js";
 import { clauseNamesProblem, clausesObject, commitClauses, disclose, verifyOpened, type OpenedClauses } from "../clauses.js";
 import { generateKeyPair, keyPairFromSecret, verifyValue, type KeyPair, type PublicKey } from "../keys.js";
 import { toHex } from "../bytes.js";
-import { amountLeq, createSubMandate, looksLikeAmount, spendingLimit, mandateId, mandateProblem, verifyMandateSignature, withinValidity, type Amount, type Mandate } from "../mandate.js";
+import { amountLeq, createSubMandate, looksLikeAmount, ownerName, spendingLimit, mandateId, mandateProblem, verifyMandateSignature, withinValidity, type Amount, type Mandate } from "../mandate.js";
 import { buildProof, verifyProof, type ProofBundle, type Report } from "../proof.js";
 import { createRecord, entryHash, isFullySigned, recordProblem, signRecord, type SignedRecord } from "../record.js";
 import type { Receipt } from "../register.js";
@@ -102,6 +102,12 @@ export interface WalletOptions {
    * sealed with the owner's archive key. A failed save never blocks the agent; it is shown in my commitments.
    */
   archive?: { url: string; claim: ArchiveKeyClaim; fetchImpl?: typeof fetch };
+  /**
+   * Counterparties whose owner has no domain (identity level "key": always the same owner, but who it is is
+   * not verified) are accepted by default, and their level is shown. An owner who wants only counterparties
+   * with a domain sets this to true.
+   */
+  requireOwnerDomain?: boolean;
 }
 
 export class Wallet {
@@ -168,7 +174,7 @@ export class Wallet {
     return {
       agent: this.key.publicKey,
       mandate: m
-        ? { owner: m.body.owner.domain, scope: m.body.scope, maxAmount: m.body.maxAmount ?? null, validUntil: m.body.notAfter }
+        ? { owner: ownerName(m.body.owner), scope: m.body.scope, maxAmount: m.body.maxAmount ?? null, validUntil: m.body.notAfter }
         : null,
       records: Object.keys(this.state.records).length,
     };
@@ -267,7 +273,8 @@ export class Wallet {
    * down, or someone blocking just that lookup), the wallet does not act, exactly as for a counterparty.
    */
   private async refuseIfRevoked(m: Mandate, whose: string) {
-    const keys = this.opts.ownerResolver ? await this.opts.ownerResolver(m.body.owner.domain) : null;
+    const domain = m.body.owner.domain;
+    const keys = this.opts.ownerResolver && domain !== undefined ? await this.opts.ownerResolver(domain) : null;
     let r: Awaited<ReturnType<RegisterClient["revocations"]>>;
     try {
       r = await this.register.revocations(subjectsOf(m), signersOf(m, keys));
@@ -358,6 +365,7 @@ export class Wallet {
    * Refuses a counterparty whose check is not clean: bad signature, expired, revoked, revocations
    * unreachable, or an owner key not published at the owner's domain. The last one alone can be
    * waived with allowUnverifiedOwner (the owner must say so: anyone can write any domain in a mandate).
+   * An owner without a domain claims nothing false: accepted at level "key" unless requireOwnerDomain.
    */
   private async requireCounterparty(m: Mandate, allowUnverifiedOwner = false): Promise<CounterpartyCheck> {
     if (mandateProblem(m)) throw new Error(`the counterparty's mandate is malformed: ${mandateProblem(m)}`);
@@ -365,7 +373,9 @@ export class Wallet {
     if (check.revoked) throw new Error(`the counterparty's mandate was revoked on ${check.revoked.at}`);
     const ownerOnly = (x: string) => x.startsWith("owner key not published by");
     const blocking = check.problems.filter((x) => !(allowUnverifiedOwner && ownerOnly(x)));
-    if (!allowUnverifiedOwner && check.level !== "domain" && !blocking.some(ownerOnly))
+    if (check.level === "key") {
+      if (this.opts.requireOwnerDomain) blocking.push(`owner ${check.owner} has no domain, and this wallet accepts only owners with a domain`);
+    } else if (!allowUnverifiedOwner && check.level !== "domain" && !blocking.some(ownerOnly))
       blocking.push(`owner ${check.owner} not verified (no owner lookup configured)`);
     if (blocking.length) throw new Error(`counterparty not accepted: ${blocking.join("; ")}`);
     return check;
@@ -483,7 +493,7 @@ export class Wallet {
         .filter((p) => p.agent !== this.key.publicKey)
         .map((p) => {
           const m = r.mandates.find((x) => mandateId(x) === p.mandate);
-          return { agent: p.agent, owner: m?.body.owner.domain ?? "unknown", scope: m?.body.scope };
+          return { agent: p.agent, owner: m ? ownerName(m.body.owner) : "unknown", scope: m?.body.scope };
         });
     const open = Object.entries(this.state.records)
       .filter(([, r]) => r.kind === "agreement" && !r.closed)
@@ -522,7 +532,7 @@ export class Wallet {
     return {
       as_of: now.toISOString(),
       my_mandate: m
-        ? { owner: m.body.owner.domain, scope: m.body.scope, valid_until: m.body.notAfter, days_left: Math.floor((Date.parse(m.body.notAfter) - nowMs) / 86_400_000) }
+        ? { owner: ownerName(m.body.owner), scope: m.body.scope, valid_until: m.body.notAfter, days_left: Math.floor((Date.parse(m.body.notAfter) - nowMs) / 86_400_000) }
         : null,
       open,
       waiting,
@@ -701,7 +711,7 @@ export class Wallet {
       if (name !== "amount" && looksLikeAmount(value))
         throw new Error(`clause "${name}" contains an amount: under a mandate with a spending limit the price goes only in the "amount" clause`);
     if (amount === undefined)
-      throw new Error(`the mandate of ${m.body.owner.domain} has a spending limit (${max.value} ${max.currency}): the agreement needs an "amount" clause {value, currency}`);
+      throw new Error(`the mandate of ${ownerName(m.body.owner)} has a spending limit (${max.value} ${max.currency}): the agreement needs an "amount" clause {value, currency}`);
     if (!amount || typeof amount !== "object" || typeof amount.value !== "string" || typeof amount.currency !== "string")
       throw new Error("the amount clause must be {value: '123.45', currency: 'EUR'}");
     let within = false;
@@ -711,7 +721,7 @@ export class Wallet {
       throw new Error(`invalid amount ${amount.value}`);
     }
     if (!within)
-      throw new Error(`amount ${amount.value} ${amount.currency} exceeds the mandate of ${m.body.owner.domain} (${max.value} ${max.currency}): instead of dropping the deal, that agent can pause and ask its owner (sealed form ask_owner)`);
+      throw new Error(`amount ${amount.value} ${amount.currency} exceeds the mandate of ${ownerName(m.body.owner)} (${max.value} ${max.currency}): instead of dropping the deal, that agent can pause and ask its owner (sealed form ask_owner)`);
   }
 }
 

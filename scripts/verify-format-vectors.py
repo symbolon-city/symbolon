@@ -81,6 +81,10 @@ def main(path):
 
     m = v["mandate"]
     checks.append(("mandate id", digest(m["mandate"]["body"]) == m["id"]))
+    k = v["mandate_without_domain"]
+    checks.append(("mandate without domain: id", digest(k["mandate"]["body"]) == k["id"]))
+    checks.append(("mandate without domain: canonical body", canonical(k["mandate"]["body"]) == k["canonical_body"]))
+    checks.append(("mandate without domain: owner has the key only", list(k["mandate"]["body"]["owner"].keys()) == ["key"]))
 
     r = v["record"]
     rec = r["record"]
@@ -105,6 +109,7 @@ def main(path):
             except Exception:
                 return False
         checks.append(("mandate signature", ok(m["mandate"]["body"], m["mandate"]["signature"], m["mandate"]["body"]["owner"]["key"])))
+        checks.append(("mandate without domain: signature", ok(k["mandate"]["body"], k["mandate"]["signature"], k["mandate"]["body"]["owner"]["key"])))
         checks.append(("record signatures", all(ok(rec["body"], x["signature"], x["agent"]) for x in rec["signatures"])))
     except ImportError:
         print("(cryptography not installed: Ed25519 checks skipped)")

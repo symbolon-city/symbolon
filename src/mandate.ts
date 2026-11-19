@@ -6,6 +6,22 @@ import { randomBytes, toHex } from "./bytes.js";
 import { digest } from "./hash.js";
 import { AGENT_KEY, OWNER_KEY, signValue, verifyValue, type KeyPair, type PublicKey } from "./keys.js";
 
+/**
+ * Who answers for an agent. With `domain` (identity level "domain"): the key must be published at
+ * https://<domain>/.well-known/symbolon.json. Without it (level "key"): the owner is known only by its key,
+ * typically a passkey on the owner's phone. Always the same owner, but who it is is not verified: the
+ * counterparty sees the level and decides.
+ */
+export interface Owner {
+  domain?: string;
+  key: PublicKey;
+}
+
+/** How an owner is shown: its domain, or its key when it has no domain. Keys contain ":", domains cannot, so the two never collide. */
+export function ownerName(o: Owner): string {
+  return o.domain ?? o.key;
+}
+
 export interface Amount {
   value: string; // decimal string, e.g. "50000.00"
   currency: string; // ISO 4217, e.g. "EUR"
@@ -15,7 +31,7 @@ export interface Amount {
 export interface MandateBody {
   type: "accord/mandate";
   v: 1;
-  owner: { domain: string; key: PublicKey };
+  owner: Owner;
   agent: PublicKey;
   scope: string;
   maxAmount?: Amount;
@@ -37,7 +53,7 @@ export interface SubMandateBody {
   parent: string;
   /** The agent key of the mandate above: it signs this one. */
   issuer: PublicKey;
-  owner: { domain: string; key: PublicKey };
+  owner: Owner;
   agent: PublicKey;
   scope: string;
   /** Limit per agreement. */
@@ -61,9 +77,10 @@ export interface Mandate {
 /** At most this many links in a chain, top included (keeps checks and revocation lookups small). */
 export const MAX_CHAIN_LINKS = 4;
 
+/** `ownerDomain` omitted: an owner without a website (identity level "key"). */
 export function createMandate(
   owner: KeyPair,
-  params: Omit<MandateBody, "type" | "v" | "owner"> & { ownerDomain: string },
+  params: Omit<MandateBody, "type" | "v" | "owner"> & { ownerDomain?: string },
 ): Mandate {
   const body = mandateBody(owner.publicKey, params);
   return { body, signature: signValue(body, owner) };
@@ -73,9 +90,10 @@ export function createMandate(
  * The body of a mandate, checked, ready to be signed. For an owner who signs with a passkey: the page shows
  * the body, the device signs passkeyChallenge(body), and signedMandate() puts the two together.
  */
-export function mandateBody(ownerKey: PublicKey, params: Omit<MandateBody, "type" | "v" | "owner"> & { ownerDomain: string }): MandateBody {
+export function mandateBody(ownerKey: PublicKey, params: Omit<MandateBody, "type" | "v" | "owner"> & { ownerDomain?: string }): MandateBody {
   const { ownerDomain, ...rest } = params;
-  const body: MandateBody = { type: "accord/mandate", v: 1, owner: { domain: ownerDomain, key: ownerKey }, ...rest };
+  const owner: Owner = ownerDomain === undefined ? { key: ownerKey } : { domain: ownerDomain, key: ownerKey };
+  const body: MandateBody = { type: "accord/mandate", v: 1, owner, ...rest };
   const problem = mandateProblem({ body, signature: "" });
   if (problem) throw new Error(problem);
   return body;
@@ -177,8 +195,12 @@ function oneProblem(x: Mandate, allowChain: boolean): string | null {
   if (Object.keys(b).some((k) => !(sub ? SUB_FIELDS : BODY_FIELDS).includes(k))) return "unexpected fields in mandate body";
   if ((b.type !== "accord/mandate" && !sub) || b.v !== 1) return "not a mandate";
   if (!b.owner || typeof b.owner !== "object" || Object.keys(b.owner).some((k) => k !== "domain" && k !== "key")) return "invalid mandate owner";
-  const bad = ownerDomainProblem(b.owner.domain);
-  if (bad) return bad;
+  // No domain: an owner known only by its key. A domain written as anything but a valid domain is refused,
+  // including a "domain" field present but empty or undefined: one spelling per owner.
+  if ("domain" in b.owner) {
+    const bad = ownerDomainProblem(b.owner.domain);
+    if (bad) return bad;
+  }
   if (typeof b.owner.key !== "string" || !OWNER_KEY.test(b.owner.key) || typeof b.agent !== "string" || !AGENT_KEY.test(b.agent)) return "invalid key in mandate";
   if (typeof b.scope !== "string" || b.scope.length > MANDATE_LIMITS.scopeMaxChars) return `mandate scope must be a text of at most ${MANDATE_LIMITS.scopeMaxChars} characters`;
   if (typeof b.charter !== "string" || b.charter.length > MANDATE_LIMITS.charterMaxChars) return "invalid mandate charter";
@@ -245,7 +267,8 @@ export function chainProblem(m: Mandate): string | null {
     const b = l.body;
     if (b.parent !== mandateId(above)) return "a link does not point to the mandate above it";
     if (b.issuer !== above.body.agent) return "a link is not given by the agent of the mandate above it";
-    if (b.owner.domain !== top.body.owner.domain || b.owner.key !== top.body.owner.key) return "a link names another owner than the top of the chain";
+    if ("domain" in b.owner !== "domain" in top.body.owner || b.owner.domain !== top.body.owner.domain || b.owner.key !== top.body.owner.key)
+      return "a link names another owner than the top of the chain";
     if (b.agent === above.body.agent) return "a link gives the mandate back to the same agent";
     if (!verifyValue(b, l.signature, b.issuer)) return "a link's signature is invalid";
     if (Date.parse(b.notBefore) < Date.parse(above.body.notBefore) || Date.parse(b.notAfter) > Date.parse(above.body.notAfter))

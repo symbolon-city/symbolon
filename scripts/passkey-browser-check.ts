@@ -9,7 +9,7 @@ import { createRequire } from "node:module";
 import assert from "node:assert/strict";
 import { fromBase64url, toBase64url } from "../src/bytes.js";
 import { passkeyChallenge, passkeyKeyFromRaw, passkeySignature, verifyValue } from "../src/keys.js";
-import { generateKeyPair, mandateBody, mandateId, revocationBody, revokes, signedMandate, signedRevocation, verifyMandateSignature } from "../src/index.js";
+import { checkMandate, generateKeyPair, mandateBody, mandateId, revocationBody, revokes, signedMandate, signedRevocation, verifyMandateSignature } from "../src/index.js";
 
 const PAGE = `<!doctype html><meta charset="utf-8"><title>passkey</title><script>
 const b64u = (buf) => btoa(String.fromCharCode(...new Uint8Array(buf))).replace(/\\+/g, "-").replace(/\\//g, "_").replace(/=+$/, "");
@@ -83,6 +83,15 @@ async function main() {
     const revocation = signedRevocation(rb, await sign(rb));
     assert.ok(revokes(revocation, mandate), "revocation signed in the browser blocks the mandate");
     console.log("ok  revocation signed by the same passkey blocks the mandate");
+
+    // The same owner without a website (identity level "key"): no domain in the mandate, nothing to publish.
+    const bodyNoSite = mandateBody(ownerKey, { agent: body.agent, scope: body.scope, maxAmount: body.maxAmount, notBefore: body.notBefore, notAfter: body.notAfter, charter: body.charter });
+    assert.deepEqual(Object.keys(bodyNoSite.owner), ["key"]);
+    const mandateNoSite = signedMandate(bodyNoSite, await sign(bodyNoSite));
+    const seen = await checkMandate(mandateNoSite, { revocations: async () => [] });
+    assert.equal(seen.level, "key");
+    assert.deepEqual(seen.problems, []);
+    console.log("ok  mandate without a website signed by the same passkey: level key");
   } finally {
     await browser.close();
     server.close();

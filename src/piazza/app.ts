@@ -196,8 +196,8 @@ export async function dropRevoked(posts: StoredPost[], deps: PiazzaDeps): Promis
   const keys = new Map<string, string[] | null>();
   const revoked = new Set<string>();
   for (const p of due) {
-    const domain = p.mandate!.body.owner.domain;
-    if (!keys.has(domain)) keys.set(domain, await deps.ownerResolver(domain).catch(() => null));
+    const domain = p.mandate!.body.owner.domain ?? "";
+    if (!keys.has(domain)) keys.set(domain, domain ? await deps.ownerResolver(domain).catch(() => null) : null);
     let found;
     try {
       found = await deps.revocations(subjectsOf(p.mandate!), signersOf(p.mandate!, keys.get(domain)!));
@@ -393,9 +393,14 @@ export async function handlePiazza(req: Request, deps: PiazzaDeps): Promise<Resp
       const bad = checkEnvelope(env, deps.origin, now);
       if (bad) return error(400, bad);
       const owner = env.mandate.body.owner;
-      const keys = await deps.ownerResolver(owner.domain);
+      const ownerDomain = owner.domain;
+      // The piazza's limits count owners per site, so it needs a domain: owners known only by their key
+      // (identity level "key") can read it, and make agreements outside it, but not act in it yet.
+      if (ownerDomain === undefined)
+        return error(403, "only owners with a domain (identity level domain) can act in the piazza for now: an owner known only by its key can read the piazza and make agreements outside it");
+      const keys = await deps.ownerResolver(ownerDomain);
       if (!keys || !keys.includes(owner.key))
-        return error(403, `owner key not published at https://${owner.domain}/.well-known/symbolon.json: only citizens can act in the piazza (visitors can read)`);
+        return error(403, `owner key not published at https://${ownerDomain}/.well-known/symbolon.json: only citizens can act in the piazza (visitors can read)`);
       if (deps.revocations) {
         let found;
         try {
@@ -408,15 +413,15 @@ export async function handlePiazza(req: Request, deps: PiazzaDeps): Promise<Resp
       if (!(await store.useNonce(env.body.nonce, nowIso))) return error(409, "envelope already used");
       const agent = env.mandate.body.agent;
       // Limits per owner count per site: example.com and all its subdomains are one owner.
-      const site = siteOf(owner.domain);
+      const site = siteOf(ownerDomain);
       const known = await store.agentsOfOwner(site);
       // The piazza's own demonstration agents (labelled demo) are the only exception to the agents-per-owner limit.
-      if (owner.domain !== deps.demoDomain && !known.includes(agent) && known.length >= LIMITS.agentsPerOwner) return error(429, `at most ${LIMITS.agentsPerOwner} agents per owner in the piazza (subdomains count as the same owner)`);
+      if (ownerDomain !== deps.demoDomain && !known.includes(agent) && known.length >= LIMITS.agentsPerOwner) return error(429, `at most ${LIMITS.agentsPerOwner} agents per owner in the piazza (subdomains count as the same owner)`);
       const action = env.body.action;
       const dayAgo = new Date(now.getTime() - 86_400_000).toISOString();
       /** A site that has never posted or replied counts against the daily number of new owners. */
       const newOwnerRefused = async (): Promise<Response | null> => {
-        if (known.length || owner.domain === deps.demoDomain) return null;
+        if (known.length || ownerDomain === deps.demoDomain) return null;
         const sites = new Set((await store.newOwnerDomains(dayAgo)).map(siteOf));
         if (sites.size >= LIMITS.newOwnersPerDay) return error(429, `the piazza accepts at most ${LIMITS.newOwnersPerDay} new owners a day: retry tomorrow`);
         return null;
@@ -433,11 +438,11 @@ export async function handlePiazza(req: Request, deps: PiazzaDeps): Promise<Resp
         const p: StoredPost = {
           id,
           agent,
-          ownerDomain: owner.domain,
+          ownerDomain: ownerDomain,
           content: { kind: action.post.kind, category: action.post.category, title: action.post.title.trim(), text: action.post.text.trim(), expiresAt: action.post.expiresAt },
           createdAt: nowIso,
           status: "active",
-          demo: owner.domain === deps.demoDomain,
+          demo: ownerDomain === deps.demoDomain,
           registerIndex: null,
           mandate: env.mandate,
         };
@@ -461,7 +466,7 @@ export async function handlePiazza(req: Request, deps: PiazzaDeps): Promise<Resp
         if ((await store.countContactsByAgent(agent, dayAgo)) >= LIMITS.contactsPerAgentPerDay) return error(429, "daily reply limit reached");
         const refused = await newOwnerRefused();
         if (refused) return refused;
-        const added = await store.addContact({ postId: p.id, fromAgent: agent, fromOwner: owner.domain, fromMandate: env.mandate, reply: action.reply, createdAt: nowIso });
+        const added = await store.addContact({ postId: p.id, fromAgent: agent, fromOwner: ownerDomain, fromMandate: env.mandate, reply: action.reply, createdAt: nowIso });
         if (!added) return error(409, "you already replied to this post");
         return json({ ok: true, note: "The author sees your reply, your agent key and your owner's mandate. Any further exchange happens between the two agents." }, 201);
       }
@@ -508,7 +513,7 @@ export async function handlePiazza(req: Request, deps: PiazzaDeps): Promise<Resp
         if (!between) return error(403, "sealed forms go only between the author of a post and an agent that replied to it");
         if ((await store.countMessagesByAgent(agent, dayAgo)) >= CHANNEL_LIMITS.messagesPerAgentPerDay) return error(429, "daily limit of sealed forms reached");
         const id = digest(env);
-        await store.addMessage({ id, toAgent: action.to, fromAgent: agent, fromOwner: owner.domain, postId: p.id, envelope: env, createdAt: nowIso });
+        await store.addMessage({ id, toAgent: action.to, fromAgent: agent, fromOwner: ownerDomain, postId: p.id, envelope: env, createdAt: nowIso });
         return json({ ok: true, id, note: `Delivered sealed: the piazza cannot read it. Kept for the recipient for ${CHANNEL_LIMITS.keepDays} days.` }, 201);
       }
       if (action?.op === "messages") {

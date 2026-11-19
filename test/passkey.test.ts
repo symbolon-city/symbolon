@@ -22,32 +22,7 @@ import {
 } from "../src/index.js";
 import { MAX_PASSKEY_SIGNATURE, isUsablePublicKey, passkeyChallenge, passkeyKeyFromRaw, passkeyProblem, passkeySignature, verifyValue } from "../src/keys.js";
 import { archiveKeyProblem, type ArchiveKeyClaim } from "../src/archive.js";
-
-/** A device with one passkey for one site. `flags` and `tamper` let a test make the assertions it should refuse. */
-class SoftPasskey {
-  readonly secret = p256.utils.randomPrivateKey();
-  readonly publicKey = passkeyKeyFromRaw(p256.getPublicKey(this.secret, false));
-  constructor(readonly rpId = "symboloncity.com", readonly origin = "https://symboloncity.com") {}
-
-  sign(
-    value: unknown,
-    o: { flags?: number; type?: string; challenge?: Uint8Array; crossOrigin?: boolean; extraAuthData?: Uint8Array; lowS?: boolean } = {},
-  ): string {
-    const authData = concat(sha256(utf8(this.rpId)), new Uint8Array([o.flags ?? 0x05]), new Uint8Array([0, 0, 0, 7]), o.extraAuthData ?? new Uint8Array());
-    const clientData = utf8(
-      JSON.stringify({
-        type: o.type ?? "webauthn.get",
-        challenge: toBase64url(o.challenge ?? passkeyChallenge(value)),
-        origin: this.origin,
-        ...(o.crossOrigin === undefined ? {} : { crossOrigin: o.crossOrigin }),
-      }),
-    );
-    let sig: { r: bigint; s: bigint; toDERRawBytes(): Uint8Array } = p256.sign(sha256(concat(authData, sha256(clientData))), this.secret, { prehash: false, lowS: true });
-    // lowS: false gives the other valid encoding of the same signature (S replaced by n - S), as many devices produce.
-    if (o.lowS === false) sig = new p256.Signature(sig.r, p256.CURVE.n - sig.s);
-    return passkeySignature({ authenticatorData: authData, clientDataJSON: clientData, signature: sig.toDERRawBytes() });
-  }
-}
+import { SoftPasskey } from "./softpasskey.js";
 
 const later = (days: number) => new Date(Date.now() + days * 86_400_000).toISOString();
 

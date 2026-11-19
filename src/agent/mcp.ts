@@ -73,7 +73,7 @@ export function buildMcpServer(wallet: Wallet, opts: { piazzaUrl?: string; fetch
     {
       title: "Check a counterparty",
       description:
-        "Checks another agent's mandate: is it signed by its owner, still valid, and is the owner's key published on the owner's website (level 'domain')? Read-only.",
+        "Checks another agent's mandate: is it signed by its owner, still valid, and is the owner's key published on the owner's website (level 'domain')? An owner without a website is known only by its key (level 'key': always the same owner, identity not verified; you decide if that is enough). Read-only.",
       inputSchema: { mandate: jsonObject },
     },
     ({ mandate }) => run(() => wallet.checkCounterparty(mandate as unknown as Mandate)),

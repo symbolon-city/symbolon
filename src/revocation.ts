@@ -105,7 +105,9 @@ export function subjectsOf(m: Mandate): string[] {
  * revocations written by unrelated keys cannot crowd out the real one.
  */
 export function signersOf(m: Mandate, ownerKeys: PublicKey[] | null = null): PublicKey[] {
-  return [...new Set([m.body.owner.key, ...linksOf(m).map((l) => l.body.agent), ...(ownerKeys ?? [])])];
+  // An owner without a domain has no other keys: only its own key speaks for it.
+  const others = m.body.owner.domain === undefined ? [] : (ownerKeys ?? []);
+  return [...new Set([m.body.owner.key, ...linksOf(m).map((l) => l.body.agent), ...others])];
 }
 
 /** Structural and signature check. Returns a problem, or null if well formed and signed by `by`. */
@@ -141,7 +143,9 @@ export function revokes(r: Revocation, m: Mandate, ownerKeys: PublicKey[] | null
   if (revocationProblem(r)) return false;
   const { by, target, ownerDomain } = r.body;
   const owner = m.body.owner;
-  const byOwner = by === owner.key || (!!ownerKeys?.includes(by) && (ownerDomain ?? owner.domain) === owner.domain);
+  // Another key of the owner counts only for an owner with a domain that publishes it; an owner without a
+  // domain (identity level "key") is its key, so only that key can revoke as owner.
+  const byOwner = by === owner.key || (owner.domain !== undefined && !!ownerKeys?.includes(by) && (ownerDomain ?? owner.domain) === owner.domain);
   if (target.kind === "owner-key") return target.key === owner.key && byOwner;
   // Any link revoked stops the whole chain below it.
   return linksOf(m).some((l) => {

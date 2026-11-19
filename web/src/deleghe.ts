@@ -182,13 +182,15 @@ $("verify-form").addEventListener("submit", (e) => {
     const lines = [
       sigOk ? "✔ Timbro valido: la delega non è stata modificata." : "✘ Timbro non valido: la delega è stata modificata o è falsa.",
       timeOk ? "✔ In corso di validità." : "✘ Scaduta o non ancora valida.",
-      `Padrone: ${b.owner.domain}`,
+      b.owner.domain === undefined ? `Padrone: senza sito, riconosciuto solo dalla sua chiave ${b.owner.key.slice(0, 20)}…` : `Padrone: ${b.owner.domain}`,
       `Agente: ${b.agent.slice(0, 24)}…`,
       `Può: ${b.scope}`,
       `Limite: ${b.maxAmount ? `${b.maxAmount.value} ${b.maxAmount.currency}` : "nessuno"}`,
       `Valida fino al ${new Date(b.notAfter).toLocaleDateString("it-IT")}`,
       `Codice della delega: ${mandateId(m).slice(0, 16)}…`,
-      `Resta da controllare che la chiave del padrone sia pubblicata su https://${b.owner.domain}/.well-known/symbolon.json`,
+      b.owner.domain === undefined
+        ? "Livello di identità «chiave»: è sempre lo stesso padrone, ma chi sia non è verificato. Decide chi riceve la delega se basta."
+        : `Resta da controllare che la chiave del padrone sia pubblicata su https://${b.owner.domain}/.well-known/symbolon.json`,
     ];
     for (const l of lines) {
       const p = document.createElement("p");

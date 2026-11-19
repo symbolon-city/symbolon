@@ -40,6 +40,13 @@ export function buildVectors() {
     notBefore: "2026-11-16T00:00:00Z", notAfter: "2026-12-16T00:00:00Z", charter: "accord-charter/0.1",
   });
 
+  // An owner without a domain (identity level "key"): the owner object has the key only.
+  const keyOwner = keyPairFromSecret(secret("owner without domain"));
+  const mandateNoDomain = createMandate(keyOwner, {
+    agent: agentA.publicKey, scope: "picture-frame restoration", maxAmount: { value: "2000.00", currency: "EUR" },
+    notBefore: "2026-11-19T00:00:00Z", notAfter: "2027-02-19T00:00:00Z", charter: "accord-charter/0.1",
+  });
+
   let record: SignedRecord = {
     body: {
       type: "accord/agreement", v: 1, clausesRoot, clauseCount: clauses.length,
@@ -74,6 +81,13 @@ export function buildVectors() {
       root: clausesRoot,
     },
     mandate: { owner_secret_key: secret("owner"), mandate: mandateA, canonical_body: canonical(mandateA.body), id: mandateId(mandateA) },
+    mandate_without_domain: {
+      note: "Identity level key: no domain field at all; the owner is known only by its key.",
+      owner_secret_key: secret("owner without domain"),
+      mandate: mandateNoDomain,
+      canonical_body: canonical(mandateNoDomain.body),
+      id: mandateId(mandateNoDomain),
+    },
     record: {
       agent_secret_keys: { A: secret("agent A"), B: secret("agent B") },
       mandate_B: mandateB,

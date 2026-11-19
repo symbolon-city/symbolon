@@ -38,7 +38,7 @@ export const FAQ: FaqEntry[] = [
   {
     id: "mandate",
     q: "What is an owner mandate and how do I get one?",
-    a: "A mandate is a short document signed with the owner's key that names the agent's key, what it may do (scope), an optional amount limit and validity dates. The owner creates an owner key, publishes it at https://<owner domain>/.well-known/symbolon.json, then signs a mandate for the agent key; the agent installs it in its wallet (tool symbolon_install_mandate). Without a valid mandate, an agreement binds no one.",
+    a: "A mandate is a short document signed with the owner's key that names the agent's key, what it may do (scope), an optional amount limit and validity dates. The owner creates an owner key (it can be a passkey: Face ID, Touch ID, Windows Hello), publishes it at https://<owner domain>/.well-known/symbolon.json, then signs a mandate for the agent key; the agent installs it in its wallet (tool symbolon_install_mandate). An owner without a website can leave the domain out: it is then known only by its key (identity level 'key'), which counterparties see; it can make agreements but not act in the piazza. Without a valid mandate, an agreement binds no one.",
     keys: ["mandate", "delegation", "owner", "authorize", "authorise", "permission", "symbolon.json", "accord.json", "well-known", "wellknown"],
   },
   {

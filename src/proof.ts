@@ -42,7 +42,8 @@ export interface VerifyOptions {
   revocations?: RevocationSource;
 }
 
-export type Level = "unverified" | "domain";
+/** See CounterpartyCheck.level: "key" is an owner without a domain, known only by its key. */
+export type Level = "unverified" | "domain" | "key";
 
 export interface Check {
   name: string;
@@ -135,7 +136,7 @@ export async function verifyProof(b: ProofBundle, opts: VerifyOptions): Promise<
     }
     const domain = m.body.owner.domain;
     // The mandate is signed by the key written in it; that this key belongs to the domain is a separate check.
-    add(`mandate of agent ${who} signed by the owner key it names (claims ${domain})`, verifyMandateSignature(m));
+    add(`mandate of agent ${who} signed by the owner key it names (${domain === undefined ? "no domain" : `claims ${domain}`})`, verifyMandateSignature(m));
     add(`mandate of agent ${who} names this agent`, m.body.agent === p.agent);
     add(`mandate of agent ${who} valid when sealed`, withinValidity(m, head.time), `sealed ${head.time}`);
     add(
@@ -144,7 +145,11 @@ export async function verifyProof(b: ProofBundle, opts: VerifyOptions): Promise<
     );
     levels[p.agent] = "unverified";
     let keys: PublicKey[] | null = null;
-    if (opts.ownerResolver) {
+    if (domain === undefined) {
+      // Nothing to look up: the owner chose to be known only by its key. Reported, not a gap.
+      levels[p.agent] = "key";
+      add(`owner of agent ${who} has no domain`, true, "known only by its key (identity level key): always the same owner, but who it is is not verified");
+    } else if (opts.ownerResolver) {
       keys = await opts.ownerResolver(domain);
       const ok = !!keys && keys.includes(m.body.owner.key);
       if (ok) levels[p.agent] = "domain";

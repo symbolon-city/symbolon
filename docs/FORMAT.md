@@ -100,9 +100,15 @@ A mandate is `{"body": ..., "signature": ...}`, signed by the owner key over the
 
 - **Mandate id** = fingerprint of the canonical `body` only (`SHA-256(UTF-8(canonical(body)))`). The
   signature and anything outside the body do not change it.
-- The owner key is valid at level "domain" only if it is listed at `https://<owner domain>/.well-known/symbolon.json`.
+- **Identity levels.** With `owner.domain`, the owner key is valid at level "domain" only if it is listed at
+  `https://<owner domain>/.well-known/symbolon.json`. **Without a domain** the owner object is
+  `{ "key": "<owner key>" }` and nothing else (no `domain` field at all: an empty, `null` or non-canonical
+  domain is refused): level "key", an owner known only by its key, typically a passkey (section 3.1). Always the
+  same owner, but who it is is not verified; verifiers report the level and the counterparty decides. Nothing
+  is looked up, so a proof is not incomplete for that. Only that key revokes as owner. The piazza is for owners
+  with a domain (its limits count owners per site). Test vector: `mandate_without_domain`.
 - Sub-mandates (`"type": "symbolon/submandate"`) are signed by the agent of the mandate above (`issuer`),
-  name it by id (`parent`), copy the `owner`, may add `total` and a salted `task`, and carry the links above
+  name it by id (`parent`), copy the `owner` exactly (with or without `domain`), may add `total` and a salted `task`, and carry the links above
   in `chain` (outside the signed body). Limits and dates can never exceed those above. Details: `src/mandate.ts`.
 
 ## 6. Records and the register entry

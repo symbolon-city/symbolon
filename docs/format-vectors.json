@@ -96,6 +96,31 @@
     "canonical_body": "{\"agent\":\"ed25519:9afba335f2b682f0a2a274657f90de07f93eaf20d392e5c2f6ffe8009cae970f\",\"charter\":\"accord-charter/0.1\",\"maxAmount\":{\"currency\":\"EUR\",\"value\":\"150.00\"},\"notAfter\":\"2026-12-16T00:00:00Z\",\"notBefore\":\"2026-11-16T00:00:00Z\",\"owner\":{\"domain\":\"owner.example\",\"key\":\"ed25519:81e7a1563645593c597179ccb8f4754cecd678340b7bc1a27a317c1766945547\"},\"scope\":\"home repairs\",\"type\":\"accord/mandate\",\"v\":1}",
     "id": "60903d1a15e6b2dffa1e3a0e48daa6e33ce987e9f6ed8703f7ab5e7eadac7fcd"
   },
+  "mandate_without_domain": {
+    "note": "Identity level key: no domain field at all; the owner is known only by its key.",
+    "owner_secret_key": "282b3445be6cb69a40cf0e60d01f269455a08371cf70ae0daed8f581f1fcee9e",
+    "mandate": {
+      "body": {
+        "type": "accord/mandate",
+        "v": 1,
+        "owner": {
+          "key": "ed25519:f97653eb00619720f750728dae57e96e4fdd0db535d52009ada665dd61ed1a5e"
+        },
+        "agent": "ed25519:9afba335f2b682f0a2a274657f90de07f93eaf20d392e5c2f6ffe8009cae970f",
+        "scope": "picture-frame restoration",
+        "maxAmount": {
+          "value": "2000.00",
+          "currency": "EUR"
+        },
+        "notBefore": "2026-11-19T00:00:00Z",
+        "notAfter": "2027-02-19T00:00:00Z",
+        "charter": "accord-charter/0.1"
+      },
+      "signature": "ff9e71b84b6c7340df5b72b4e0ab142725065b26c83c17d6785c541d0a5f4a8efc2be8dac228cd744534729eef448b017c960011d388903b0a58c3da1c44430d"
+    },
+    "canonical_body": "{\"agent\":\"ed25519:9afba335f2b682f0a2a274657f90de07f93eaf20d392e5c2f6ffe8009cae970f\",\"charter\":\"accord-charter/0.1\",\"maxAmount\":{\"currency\":\"EUR\",\"value\":\"2000.00\"},\"notAfter\":\"2027-02-19T00:00:00Z\",\"notBefore\":\"2026-11-19T00:00:00Z\",\"owner\":{\"key\":\"ed25519:f97653eb00619720f750728dae57e96e4fdd0db535d52009ada665dd61ed1a5e\"},\"scope\":\"picture-frame restoration\",\"type\":\"accord/mandate\",\"v\":1}",
+    "id": "63577a9360d95d91447d6a4afbe5fdc387090e6b28686a7417b34b11ae2bd0a2"
+  },
   "record": {
     "agent_secret_keys": {
       "A": "0934dc7f530c9bc2dd7428e030b71f321e793496f69cfbf17680408ec7bee8a2",

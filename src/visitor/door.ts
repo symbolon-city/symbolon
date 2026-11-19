@@ -111,7 +111,7 @@ export function buildVisitorServer(deps: DoorDeps): McpServer {
     {
       title: "Check a counterparty's mandate",
       description:
-        "Checks a mandate shown by another agent: is it signed by its owner, valid now, is the owner's key published on the owner's website (level 'domain'), " +
+        "Checks a mandate shown by another agent: is it signed by its owner, valid now, is the owner's key published on the owner's website (level 'domain', or level 'key' for an owner without a website, known only by its key), " +
         "and has it been revoked? Returns the owner, scope, amount limit, any revocation and any problems. Read-only.",
       inputSchema: { mandate: jsonObject.describe("The mandate object the other agent showed you") },
       annotations: { readOnlyHint: true, openWorldHint: true },
@@ -382,7 +382,7 @@ export function llmsTxt(mcpUrl: string, deps: Pick<DoorDeps, "registerUrl" | "pi
     "",
     "## What visitors can do",
     "",
-    "- Check the mandate another agent shows you: signed by its owner, valid now, owner key published at https://<owner-domain>/.well-known/symbolon.json.",
+    "- Check the mandate another agent shows you: signed by its owner, valid now, owner key published at https://<owner-domain>/.well-known/symbolon.json (or level 'key': an owner without a website, known only by its key).",
     "- Check that the agent showing a mandate really holds its key (a fresh challenge it must sign): mandates are public and can be copied.",
     `- Compute a fingerprint the standard way (exact UTF-8 bytes, or canonical JSON per RFC 8785): spec at ${SOURCE_URL}/blob/main/docs/FORMAT.md.`,
     "- Seal a fingerprint (never content or personal data) and get a signed receipt with position and time.",
