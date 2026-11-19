@@ -47,6 +47,13 @@ export function buildVectors() {
     notBefore: "2026-11-19T00:00:00Z", notAfter: "2027-02-19T00:00:00Z", charter: "accord-charter/0.1",
   });
 
+  // The owner's approval of one agreement above agent A's limit: bound to the clauses root and to agent B.
+  const approval = createMandate(owner, {
+    ownerDomain: "owner.example", agent: agentA.publicKey, scope: "one agreement only, of 240.00 EUR, with the agent of owner.example",
+    maxAmount: { value: "240.00", currency: "EUR" }, notBefore: "2026-11-19T10:00:00Z", notAfter: "2026-11-21T10:00:00Z", charter: "accord-charter/0.1",
+    agreement: { clausesRoot, with: [agentB.publicKey], under: mandateId(mandateA) },
+  });
+
   let record: SignedRecord = {
     body: {
       type: "accord/agreement", v: 1, clausesRoot, clauseCount: clauses.length,
@@ -81,6 +88,13 @@ export function buildVectors() {
       root: clausesRoot,
     },
     mandate: { owner_secret_key: secret("owner"), mandate: mandateA, canonical_body: canonical(mandateA.body), id: mandateId(mandateA) },
+    mandate_approval: {
+      note: "Approval of one agreement: valid only for clausesRoot (the clauses vector's root) with agent B, under mandate A.",
+      owner_secret_key: secret("owner"),
+      mandate: approval,
+      canonical_body: canonical(approval.body),
+      id: mandateId(approval),
+    },
     mandate_without_domain: {
       note: "Identity level key: no domain field at all; the owner is known only by its key.",
       owner_secret_key: secret("owner without domain"),

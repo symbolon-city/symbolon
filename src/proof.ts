@@ -5,7 +5,7 @@ import { verifyAnchor, type Anchor, type AnchorStatus, type BlockProvider } from
 import { fromHex } from "./bytes.js";
 import { clauseNamesProblem, verifyDisclosure, type Disclosure } from "./clauses.js";
 import { verifyValue, type PublicKey } from "./keys.js";
-import { amountLeq, looksLikeAmount, mandateId, mandateProblem, spendingLimit, verifyMandateSignature, withinValidity, type Amount, type Mandate } from "./mandate.js";
+import { amountLeq, approvalProblem, looksLikeAmount, mandateId, mandateProblem, spendingLimit, verifyMandateSignature, withinValidity, type Amount, type Mandate } from "./mandate.js";
 import { verifyConsistency, verifyInclusion } from "./merkle.js";
 import { entryHash, recordProblem, type SignedRecord } from "./record.js";
 import { entryLeaf, verifyHeadSignature, type Receipt } from "./register.js";
@@ -138,6 +138,10 @@ export async function verifyProof(b: ProofBundle, opts: VerifyOptions): Promise<
     // The mandate is signed by the key written in it; that this key belongs to the domain is a separate check.
     add(`mandate of agent ${who} signed by the owner key it names (${domain === undefined ? "no domain" : `claims ${domain}`})`, verifyMandateSignature(m));
     add(`mandate of agent ${who} names this agent`, m.body.agent === p.agent);
+    if (m.body.type === "accord/mandate" && m.body.agreement) {
+      const bad = approvalProblem(m, rec.body);
+      add(`owner's approval of agent ${who} is for this very agreement`, !bad, bad ?? "approved by the owner for these clauses and these parties only");
+    }
     add(`mandate of agent ${who} valid when sealed`, withinValidity(m, head.time), `sealed ${head.time}`);
     add(
       `record of agent ${who} not dated after sealing`,

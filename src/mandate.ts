@@ -27,6 +27,23 @@ export interface Amount {
   currency: string; // ISO 4217, e.g. "EUR"
 }
 
+/**
+ * An owner's approval of one agreement only ("approve just this one" with Face ID): a mandate whose
+ * `agreement` binds it to the exact clauses (their root) and the other parties, given under the agent's
+ * general mandate (`under`, its id). It lets the agent go above its general limit for that agreement and
+ * nothing else; revoking the general mandate revokes it too. It lasts at most APPROVAL_MAX_DAYS and cannot be
+ * passed on to another agent.
+ */
+export interface AgreementBinding {
+  clausesRoot: string;
+  /** The agent keys of the other parties, in any order. */
+  with: PublicKey[];
+  /** Id of the agent's general mandate this approval extends. */
+  under: string;
+}
+
+export const APPROVAL_MAX_DAYS = 7;
+
 /** A mandate signed by the owner itself (the top of every chain). */
 export interface MandateBody {
   type: "accord/mandate";
@@ -38,6 +55,8 @@ export interface MandateBody {
   notBefore: string; // ISO 8601
   notAfter: string;
   charter: string;
+  /** Present only in an approval of one agreement (see AgreementBinding). */
+  agreement?: AgreementBinding;
 }
 
 /**
@@ -158,7 +177,7 @@ export function mandateId(m: Mandate): string {
 }
 
 const HEX64 = /^[0-9a-f]{64}$/;
-const BODY_FIELDS = ["type", "v", "owner", "agent", "scope", "maxAmount", "notBefore", "notAfter", "charter"];
+const BODY_FIELDS = ["type", "v", "owner", "agent", "scope", "maxAmount", "notBefore", "notAfter", "charter", "agreement"];
 const SUB_FIELDS = ["type", "v", "parent", "issuer", "owner", "agent", "scope", "maxAmount", "total", "notBefore", "notAfter", "charter", "task"];
 /** Size limits of a mandate's free fields (checked everywhere a mandate is accepted). */
 export const MANDATE_LIMITS = { scopeMaxChars: 500, charterMaxChars: 64 } as const;
@@ -207,6 +226,10 @@ function oneProblem(x: Mandate, allowChain: boolean): string | null {
   if (typeof b.notBefore !== "string" || typeof b.notAfter !== "string" || Number.isNaN(Date.parse(b.notBefore)) || Number.isNaN(Date.parse(b.notAfter)))
     return "invalid mandate dates";
   if (b.maxAmount !== undefined && amountProblem(b.maxAmount, "maxAmount")) return "invalid mandate maxAmount";
+  if (!sub && (b as MandateBody).agreement !== undefined) {
+    const bad = bindingProblem(b as MandateBody);
+    if (bad) return bad;
+  }
   if (sub) {
     const s = b as SubMandateBody;
     if (typeof s.parent !== "string" || !HEX64.test(s.parent)) return "invalid parent mandate id";
@@ -219,6 +242,32 @@ function oneProblem(x: Mandate, allowChain: boolean): string | null {
     }
   }
   if (typeof x.signature !== "string") return "mandate signature missing";
+  return null;
+}
+
+/** Shape of an approval's binding to one agreement. */
+function bindingProblem(b: MandateBody): string | null {
+  const a = b.agreement as AgreementBinding;
+  if (!a || typeof a !== "object" || Array.isArray(a) || Object.keys(a).some((k) => k !== "clausesRoot" && k !== "with" && k !== "under")) return "invalid approval: agreement must be {clausesRoot, with, under}";
+  if (typeof a.clausesRoot !== "string" || !HEX64.test(a.clausesRoot) || typeof a.under !== "string" || !HEX64.test(a.under)) return "invalid approval: clausesRoot and under must be fingerprints";
+  if (!Array.isArray(a.with) || a.with.length < 1 || a.with.length > 9 || a.with.some((k) => typeof k !== "string" || !AGENT_KEY.test(k)) || new Set(a.with).size !== a.with.length || a.with.includes(b.agent))
+    return "invalid approval: with must list 1 to 9 other agents' keys, once each";
+  const from = Date.parse(b.notBefore);
+  const to = Date.parse(b.notAfter);
+  if (!(to > from) || to - from > APPROVAL_MAX_DAYS * 86_400_000) return `invalid approval: it lasts at most ${APPROVAL_MAX_DAYS} days`;
+  return null;
+}
+
+/**
+ * Null if this mandate may be used for this agreement: always for an ordinary mandate; for an approval, only
+ * if the agreement has exactly its clauses root and exactly its other parties.
+ */
+export function approvalProblem(m: Mandate, agreement: { clausesRoot: string; parties: Array<{ agent: PublicKey }> }): string | null {
+  const a = m.body.type === "accord/mandate" ? m.body.agreement : undefined;
+  if (!a) return null;
+  if (agreement.clausesRoot !== a.clausesRoot) return "the owner's approval is for other clauses";
+  const others = agreement.parties.map((p) => p.agent).filter((k) => k !== m.body.agent);
+  if (others.length !== a.with.length || new Set(others).size !== others.length || others.some((k) => !a.with.includes(k))) return "the owner's approval is for other parties";
   return null;
 }
 
@@ -259,6 +308,7 @@ export function chainProblem(m: Mandate): string | null {
   if (links.length > MAX_CHAIN_LINKS) return "chain too long";
   const top = links[0];
   if (top.body.type !== "accord/mandate") return "the top of the chain must be a mandate signed by its owner";
+  if (top.body.agreement) return "an approval for one agreement cannot be passed on to another agent";
   if (!verifyValue(top.body, top.signature, top.body.owner.key)) return "the owner's signature at the top of the chain is invalid";
   for (let i = 1; i < links.length; i++) {
     const above = links[i - 1];

@@ -201,7 +201,7 @@ export const FORM_MEANING: Record<(typeof FORM_NAMES)[number], string> = {
   offer: "The other agent proposes an agreement. Check it and, if your owner's mandate allows it, accept it with symbolon_accept_agreement.",
   confirmation: "The other agent accepted your offer and sealed it. File it with symbolon_confirm_agreement.",
   question: "The other agent asks about a clause (or in general). Answer with a new offer, or decline.",
-  ask_owner: "The other agent paused to ask its owner, until the given time. The negotiation is not over: wait for owner_answer.",
+  ask_owner: "The other agent paused to ask its owner, until the given time. The negotiation is not over: wait for owner_answer, or for an offer made with its owner's approval of this agreement only (accept it as usual: your wallet checks the approval).",
   owner_answer: "The other agent's owner decided: go_ahead (the negotiation continues) or declined.",
   decline: "The other agent declines, with a fixed reason.",
   withdrawal: "The other agent withdraws from a sealed agreement within the agreed period. Check and record it with symbolon_record_withdrawal: your wallet verifies the proof and the date itself.",

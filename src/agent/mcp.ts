@@ -177,6 +177,46 @@ export function buildMcpServer(wallet: Wallet, opts: { piazzaUrl?: string; fetch
   );
 
   server.registerTool(
+    "symbolon_request_owner_approval",
+    {
+      title: "Ask your owner to approve just this agreement",
+      description:
+        "When an agreement is above your mandate's limit (e.g. the limit is 2000 EUR and the deal is 2400 EUR): instead of dropping it, prepare it here. " +
+        "Checks the counterparty and the clauses, fixes the exact terms, and returns what your owner must approve: a short text and clauses to show them (for_the_owner), " +
+        "and what they sign with their owner key (approval_body, or passkey_challenge for Face ID / a passkey). The approval covers these clauses with this counterparty only, " +
+        "for a short time (default 48 hours, at most 7 days); your general limit does not change. Never sign it yourself and never present it as already approved. " +
+        "Meanwhile you can tell the counterparty you are asking your owner (sealed form ask_owner).",
+      inputSchema: {
+        counterparty_mandate: jsonObject.describe("The counterparty's mandate (from its symbolon_my_mandate)"),
+        clauses: jsonObject.describe("The terms, with the 'amount' clause {value, currency} above your limit"),
+        hours: z.number().positive().max(168).optional().describe("How long the approval may be used, default 48"),
+        allow_unverified_owner: z.boolean().optional().describe("Default false. As in symbolon_propose_agreement"),
+      },
+    },
+    ({ counterparty_mandate, clauses, hours, allow_unverified_owner }) =>
+      run(() =>
+        wallet.requestApproval({ counterparty: counterparty_mandate as unknown as Mandate, clauses: clauses as Record<string, Json>, hours, allowUnverifiedOwner: allow_unverified_owner }),
+      ),
+  );
+
+  server.registerTool(
+    "symbolon_propose_approved_agreement",
+    {
+      title: "Propose an agreement your owner approved",
+      description:
+        "After symbolon_request_owner_approval and your owner's signature: checks the approval (signed by your owner's key, exactly what was shown, still valid, not revoked) " +
+        "and creates and signs the agreement with it. Returns an offer to send to the counterparty, whose wallet checks that the approval is for this very agreement.",
+      inputSchema: {
+        clauses_root: z.string().regex(/^[0-9a-f]{64}$/).optional().describe("From symbolon_request_owner_approval, together with signature"),
+        signature: z.string().max(4096).optional().describe("Your owner's signature of approval_body"),
+        approval: jsonObject.optional().describe("Or the whole signed approval {body, signature}"),
+      },
+    },
+    ({ clauses_root, signature, approval }) =>
+      run(() => wallet.proposeApproved({ approval: approval as unknown as Mandate | undefined, clausesRoot: clauses_root, signature })),
+  );
+
+  server.registerTool(
     "symbolon_accept_agreement",
     {
       title: "Accept an agreement",

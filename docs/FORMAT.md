@@ -107,6 +107,14 @@ A mandate is `{"body": ..., "signature": ...}`, signed by the owner key over the
   same owner, but who it is is not verified; verifiers report the level and the counterparty decides. Nothing
   is looked up, so a proof is not incomplete for that. Only that key revokes as owner. The piazza is for owners
   with a domain (its limits count owners per site). Test vector: `mandate_without_domain`.
+- **Approval of one agreement** ("approve just this one"): an owner-signed mandate with one more field,
+  `"agreement": { "clausesRoot": "<hex>", "with": ["<agent key of each other party>", ...], "under": "<id of the agent's general mandate>" }`.
+  It is valid only for an agreement whose `clausesRoot` is exactly that one and whose other parties are exactly
+  `with` (1-9 keys, once each, never the agent itself); it lasts at most 7 days (`notAfter - notBefore`); it
+  cannot be the top of a chain (no sub-mandates under it). It lets the agent go above its general limit for
+  that agreement only: its `maxAmount` is the approved amount. A revocation of the `under` mandate revokes it
+  too, so lookups also ask for that id. The agent prepares it (`symbolon_request_owner_approval`), the owner
+  signs it (passkey or owner key), the agent proposes the agreement with it. Test vector: `mandate_approval`.
 - Sub-mandates (`"type": "symbolon/submandate"`) are signed by the agent of the mandate above (`issuer`),
   name it by id (`parent`), copy the `owner` exactly (with or without `domain`), may add `total` and a salted `task`, and carry the links above
   in `chain` (outside the signed body). Limits and dates can never exceed those above. Details: `src/mandate.ts`.

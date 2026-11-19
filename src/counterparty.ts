@@ -3,7 +3,7 @@
 // known only by its key, e.g. a passkey), and not revoked. Used by the agent wallet
 // and by the visitors' door, which has no wallet.
 
-import { ownerName, spendingLimit, verifyMandateSignature, withinValidity, type Amount, type Mandate } from "./mandate.js";
+import { ownerName, spendingLimit, type AgreementBinding, verifyMandateSignature, withinValidity, type Amount, type Mandate } from "./mandate.js";
 import { revocationsOf, signersOf, subjectsOf, type RevocationSource } from "./revocation.js";
 import type { OwnerResolver } from "./wellknown.js";
 
@@ -28,6 +28,8 @@ export interface CounterpartyCheck {
   via: { links: number; task: boolean };
   /** Present when the mandate was revoked: from when (register time and position), by whom, why. */
   revoked?: { at: string; registerIndex: number; by: string; target: string; reason?: string };
+  /** Present when this is the owner's approval of one agreement only: it is valid for those clauses and parties, nothing else. */
+  approval?: AgreementBinding;
   /** "checked" when revocations were looked up, "not checked" otherwise (e.g. register unreachable). */
   revocations: "checked" | "not checked";
   problems: string[];
@@ -76,6 +78,7 @@ export async function checkMandate(
     validUntil: m.body.notAfter,
     via: { links: (m.chain?.length ?? 0) + 1, task: m.body.type === "symbolon/submandate" && !!m.body.task },
     ...(revoked ? { revoked } : {}),
+    ...(m.body.type === "accord/mandate" && m.body.agreement ? { approval: m.body.agreement } : {}),
     revocations: status,
     problems,
   };

@@ -81,6 +81,10 @@ def main(path):
 
     m = v["mandate"]
     checks.append(("mandate id", digest(m["mandate"]["body"]) == m["id"]))
+    a = v["mandate_approval"]
+    checks.append(("approval: id", digest(a["mandate"]["body"]) == a["id"]))
+    checks.append(("approval: bound to the clauses root", a["mandate"]["body"]["agreement"]["clausesRoot"] == c["root"]))
+    checks.append(("approval: under mandate A", a["mandate"]["body"]["agreement"]["under"] == m["id"]))
     k = v["mandate_without_domain"]
     checks.append(("mandate without domain: id", digest(k["mandate"]["body"]) == k["id"]))
     checks.append(("mandate without domain: canonical body", canonical(k["mandate"]["body"]) == k["canonical_body"]))
@@ -109,6 +113,7 @@ def main(path):
             except Exception:
                 return False
         checks.append(("mandate signature", ok(m["mandate"]["body"], m["mandate"]["signature"], m["mandate"]["body"]["owner"]["key"])))
+        checks.append(("approval: signature", ok(a["mandate"]["body"], a["mandate"]["signature"], a["mandate"]["body"]["owner"]["key"])))
         checks.append(("mandate without domain: signature", ok(k["mandate"]["body"], k["mandate"]["signature"], k["mandate"]["body"]["owner"]["key"])))
         checks.append(("record signatures", all(ok(rec["body"], x["signature"], x["agent"]) for x in rec["signatures"])))
     except ImportError:

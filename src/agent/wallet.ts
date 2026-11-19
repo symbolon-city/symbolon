@@ -5,9 +5,26 @@
 import type { BlockProvider } from "../anchor.js";
 import { canonical, type Json } from "../canonical.js";
 import { clauseNamesProblem, clausesObject, commitClauses, disclose, verifyOpened, type OpenedClauses } from "../clauses.js";
-import { generateKeyPair, keyPairFromSecret, verifyValue, type KeyPair, type PublicKey } from "../keys.js";
-import { toHex } from "../bytes.js";
-import { amountLeq, createSubMandate, looksLikeAmount, ownerName, spendingLimit, mandateId, mandateProblem, verifyMandateSignature, withinValidity, type Amount, type Mandate } from "../mandate.js";
+import { generateKeyPair, keyPairFromSecret, passkeyChallenge, verifyValue, type KeyPair, type PublicKey } from "../keys.js";
+import { toBase64url, toHex } from "../bytes.js";
+import { digest } from "../hash.js";
+import {
+  APPROVAL_MAX_DAYS,
+  amountLeq,
+  approvalProblem,
+  createSubMandate,
+  looksLikeAmount,
+  mandateBody,
+  ownerName,
+  spendingLimit,
+  mandateId,
+  mandateProblem,
+  verifyMandateSignature,
+  withinValidity,
+  type Amount,
+  type Mandate,
+  type MandateBody,
+} from "../mandate.js";
 import { buildProof, verifyProof, type ProofBundle, type Report } from "../proof.js";
 import { createRecord, entryHash, isFullySigned, recordProblem, signRecord, type SignedRecord } from "../record.js";
 import type { Receipt } from "../register.js";
@@ -58,7 +75,21 @@ export interface WalletState {
   boxPublished?: string[];
   /** The owner's archive of commitments: last snapshot number, and how the last save went. */
   archive?: { seq: number; savedAt?: string; error?: string };
+  /** Agreements prepared above the mandate's limit, waiting for the owner's approval (by clause root). */
+  approvals?: Record<string, PendingApproval>;
 }
+
+/** An agreement prepared by this agent, shown to its owner for approval and not yet proposed. */
+export interface PendingApproval {
+  opened: OpenedClauses;
+  counterparty: Mandate;
+  /** Exactly what the owner is asked to sign. */
+  body: MandateBody;
+  allowUnverifiedOwner?: boolean;
+}
+
+/** True if this mandate is the owner's approval of one agreement only. */
+const isApproval = (m: Mandate | undefined) => !!m && m.body?.type === "accord/mandate" && !!m.body.agreement;
 
 export interface WalletStorage {
   load(): Promise<WalletState | null>;
@@ -255,6 +286,7 @@ export class Wallet {
 
   async installMandate(m: Mandate): Promise<CounterpartyCheck> {
     if (m.body.agent !== this.key.publicKey) throw new Error("this mandate is for a different agent key");
+    if (isApproval(m)) throw new Error("this is your owner's approval of one agreement, not a mandate: use it with symbolon_propose_approved_agreement");
     if (!verifyMandateSignature(m)) throw new Error("mandate signature is invalid");
     if (!withinValidity(m, this.now().toISOString())) throw new Error("mandate is not valid now");
     const check = await this.checkCounterparty(m);
@@ -385,11 +417,13 @@ export class Wallet {
   async propose(p: { counterparty: Mandate; clauses: Record<string, Json>; allowUnverifiedOwner?: boolean }): Promise<Offer> {
     const mine = this.myMandate();
     if (p.counterparty?.body?.agent === this.key.publicKey) throw new Error("cannot make an agreement with yourself");
+    if (isApproval(p.counterparty))
+      throw new Error("this is the owner's approval of one agreement that the other agent has already prepared: wait for its offer and accept it");
     await this.requireCounterparty(p.counterparty, p.allowUnverifiedOwner);
     await this.refuseIfRevoked(mine, "my");
     const problem = clauseNamesProblem(Object.keys(p.clauses));
     if (problem) throw new Error(problem);
-    this.checkAmount(p.clauses, mine);
+    this.checkAmount(p.clauses, mine, true);
     this.checkAmount(p.clauses, p.counterparty);
     this.checkTotal(p.clauses, mine);
     const opened = commitClauses(Object.entries(p.clauses).map(([name, value]) => ({ name, value })));
@@ -445,12 +479,14 @@ export class Wallet {
       if (!sig || !verifyValue(record.body, sig.signature, p.agent)) throw new Error(`the signature of agent ${who} is missing or invalid`);
       const m = mandates.find((x) => !mandateProblem(x) && mandateId(x) === p.mandate);
       if (!m || m.body.agent !== p.agent) throw new Error(`agent ${who} has no valid mandate in the offer`);
+      const notThis = approvalProblem(m, record.body);
+      if (notThis) throw new Error(`agent ${who}: ${notThis}`);
       counterparties.push(await this.requireCounterparty(m, opts.allowUnverifiedOwner));
       theirMandates.push(m);
     }
     await this.refuseIfRevoked(mine, "my");
     const clauses = clausesObject(opened);
-    this.checkAmount(clauses, mine);
+    this.checkAmount(clauses, mine, true);
     for (const m of theirMandates) this.checkAmount(clauses, m);
     this.checkTotal(clauses, mine);
 
@@ -461,6 +497,121 @@ export class Wallet {
     await this.persist();
     await this.saveToOwnerArchive();
     return { entry, confirmation: { type: "accord/confirmation", record: signed, receipt }, counterparty: counterparties[0], counterparties };
+  }
+
+  /**
+   * "Approve just this one": prepares an agreement above this agent's limit and returns what its owner must
+   * sign (with Face ID, a passkey, or the owner key) to approve that agreement only. The general limit does
+   * not change. Once signed, proposeApproved() sends it to the counterparty.
+   */
+  async requestApproval(p: { counterparty: Mandate; clauses: Record<string, Json>; hours?: number; allowUnverifiedOwner?: boolean }) {
+    const mine = this.myMandate();
+    if (mine.body.type !== "accord/mandate") throw new Error("only an agent with a mandate signed directly by its owner can ask it to approve one agreement");
+    if (p.counterparty?.body?.agent === this.key.publicKey) throw new Error("cannot make an agreement with yourself");
+    if (isApproval(p.counterparty)) throw new Error("the counterparty's mandate is an approval of another agreement: use its general mandate");
+    const check = await this.requireCounterparty(p.counterparty, p.allowUnverifiedOwner);
+    await this.refuseIfRevoked(mine, "my");
+    const problem = clauseNamesProblem(Object.keys(p.clauses));
+    if (problem) throw new Error(problem);
+    const amount = (Object.prototype.hasOwnProperty.call(p.clauses, "amount") ? p.clauses["amount"] : undefined) as unknown as Amount | undefined;
+    if (!amount || typeof amount !== "object" || typeof amount.value !== "string" || typeof amount.currency !== "string")
+      throw new Error("an approval is for an amount: the agreement needs an 'amount' clause {value: '123.45', currency: 'EUR'}");
+    const limit = spendingLimit(mine);
+    let within = false;
+    try {
+      within = !limit || (limit.currency === amount.currency && amountLeq(amount.value, limit.value));
+    } catch {
+      throw new Error(`invalid amount ${amount.value}`);
+    }
+    if (within) throw new Error("this agreement is within your mandate: propose it directly with symbolon_propose_agreement");
+    this.checkAmount(p.clauses, p.counterparty);
+    const hours = p.hours ?? 48;
+    if (!Number.isFinite(hours) || hours <= 0 || hours > APPROVAL_MAX_DAYS * 24) throw new Error(`an approval lasts from a few minutes to ${APPROVAL_MAX_DAYS * 24} hours`);
+    const opened = commitClauses(Object.entries(p.clauses).map(([name, value]) => ({ name, value })));
+    const from = this.now().getTime() - 60_000;
+    const owner = mine.body.owner;
+    const body = mandateBody(owner.key, {
+      ...(owner.domain !== undefined ? { ownerDomain: owner.domain } : {}),
+      agent: this.key.publicKey,
+      scope: `one agreement only, of ${amount.value} ${amount.currency}, with the agent of ${check.owner}`,
+      maxAmount: { value: amount.value, currency: amount.currency },
+      notBefore: new Date(from).toISOString(),
+      notAfter: new Date(from + hours * 3_600_000).toISOString(),
+      charter: mine.body.charter,
+      agreement: { clausesRoot: opened.root, with: [p.counterparty.body.agent], under: mandateId(mine) },
+    });
+    this.checkAmount(p.clauses, { body, signature: "" });
+    (this.state.approvals ??= {})[opened.root] = { opened, counterparty: p.counterparty, body, ...(p.allowUnverifiedOwner ? { allowUnverifiedOwner: true } : {}) };
+    await this.persist();
+    const general = limit ? `${limit.value} ${limit.currency}` : "none";
+    return {
+      clauses_root: opened.root,
+      approval_body: body,
+      fingerprint: digest(body),
+      passkey_challenge: toBase64url(passkeyChallenge(body)),
+      /**
+       * The clauses with their salts: whoever shows the request to the owner (a page, the owner tool) recomputes
+       * their root and must find approval_body.agreement.clausesRoot, so the owner reads the very clauses signed,
+       * not only this agent's description of them.
+       */
+      clauses_opened: opened,
+      for_the_owner: {
+        text:
+          `Approve only this agreement: ${amount.value} ${amount.currency} with the agent of ${check.owner} (identity level ${check.level}). ` +
+          `Your general limit stays ${general}. This approval is valid until ${body.notAfter} and for these clauses only.`,
+        clauses: p.clauses,
+        counterparty: { owner: check.owner, level: check.level },
+        general_limit: limit ?? null,
+        valid_until: body.notAfter,
+      },
+      next:
+        "Show for_the_owner to your owner as the thing to approve, and give the owner's page or tool the whole answer: it checks clauses_opened against approval_body. The owner signs approval_body with the owner key " +
+        "(a passkey signs passkey_challenge; an owner key signs the canonical approval_body). Then call symbolon_propose_approved_agreement " +
+        "with clauses_root and the signature (or the signed approval), and send the offer to the counterparty.",
+    };
+  }
+
+  /** Proposes an agreement prepared with requestApproval(), once the owner has signed the approval. */
+  async proposeApproved(p: { approval?: Mandate; clausesRoot?: string; signature?: string }): Promise<Offer> {
+    const root = p.approval?.body?.type === "accord/mandate" ? p.approval.body.agreement?.clausesRoot : p.clausesRoot;
+    const pending = root ? this.state.approvals?.[root] : undefined;
+    if (!pending || !root) throw new Error("no approval request of mine matches: first ask with symbolon_request_owner_approval");
+    const approval: Mandate = p.approval ? { body: p.approval.body, signature: p.approval.signature } : { body: pending.body, signature: p.signature ?? "" };
+    const shape = mandateProblem(approval);
+    if (shape) throw new Error(`the approval is malformed: ${shape}`);
+    if (canonical(approval.body) !== canonical(pending.body)) throw new Error("the approval differs from what was shown to the owner");
+    if (!verifyMandateSignature(approval)) throw new Error("the approval is not signed by my owner's key (or it was changed)");
+    const mine = this.myMandate();
+    if (pending.body.agreement!.under !== mandateId(mine)) throw new Error("my mandate changed since the owner was asked: ask again");
+    if (!withinValidity(approval, this.now().toISOString())) throw new Error("the approval has expired: ask the owner again");
+    await this.requireCounterparty(pending.counterparty, pending.allowUnverifiedOwner);
+    await this.refuseIfRevoked(mine, "my");
+    await this.refuseIfRevoked(approval, "the approval of my");
+    const clauses = clausesObject(pending.opened);
+    this.checkAmount(clauses, approval);
+    this.checkAmount(clauses, pending.counterparty);
+    const record = signRecord(
+      createRecord({
+        type: "accord/agreement",
+        clausesRoot: pending.opened.root,
+        clauseCount: pending.opened.count,
+        parties: [
+          { agent: this.key.publicKey, mandate: mandateId(approval) },
+          { agent: pending.counterparty.body.agent, mandate: mandateId(pending.counterparty) },
+        ],
+        charter: this.charter,
+        createdAt: this.now().toISOString(),
+      }),
+      this.key,
+    );
+    const bad = approvalProblem(approval, record.body);
+    if (bad) throw new Error(bad);
+    const mandates = [approval, pending.counterparty];
+    this.state.offers[root] = { kind: "agreement", record, opened: pending.opened, mandates };
+    delete this.state.approvals![root];
+    await this.persist();
+    await this.saveToOwnerArchive();
+    return { type: "accord/offer", record, opened: pending.opened, mandates };
   }
 
   /** The proposer files the counterparty's confirmation. */
@@ -523,6 +674,13 @@ export class Wallet {
       offered_at: r.record.body.createdAt,
       note: "Sent, not yet sealed: the other agent has not accepted (or you have not filed its confirmation with symbolon_confirm_agreement).",
     }));
+    const waitingForOwner = Object.entries(this.state.approvals ?? {}).map(([root, a]) => ({
+      clauses_root: root,
+      with: [{ agent: a.counterparty.body.agent, owner: ownerName(a.counterparty.body.owner) }],
+      clauses: clausesObject(a.opened),
+      ask_until: a.body.notAfter,
+      note: "Prepared above your limit and waiting for your owner's approval (then symbolon_propose_approved_agreement).",
+    }));
     const closed = Object.entries(this.state.records)
       .filter(([, r]) => r.closed)
       .map(([entry, r]) => ({ entry, with: counterparties(r), outcome: r.closed!.outcome, at: r.closed!.at, closing_entry: r.closed!.entry, ...(r.closed!.by ? { by: r.closed!.by } : {}) }))
@@ -536,6 +694,7 @@ export class Wallet {
         : null,
       open,
       waiting,
+      ...(waitingForOwner.length ? { waiting_for_owner: waitingForOwner } : {}),
       closed,
       ...(this.opts.archive
         ? { owner_archive: { url: this.opts.archive.url, last_saved_at: this.state.archive?.savedAt ?? null, ...(this.state.archive?.error ? { last_error: this.state.archive.error } : {}) } }
@@ -702,7 +861,7 @@ export class Wallet {
    * would dodge the limit. Strings like "999999 EUR" inside free text cannot be told apart from prose: the
    * full fix (amount as a field of the signed record, the only price that binds) comes with the launch register.
    */
-  private checkAmount(clauses: Record<string, Json>, m: Mandate) {
+  private checkAmount(clauses: Record<string, Json>, m: Mandate, mine = false) {
     const has = Object.prototype.hasOwnProperty.call(clauses, "amount");
     const amount = (has ? clauses["amount"] : undefined) as unknown as Amount | undefined;
     const max = spendingLimit(m);
@@ -721,7 +880,11 @@ export class Wallet {
       throw new Error(`invalid amount ${amount.value}`);
     }
     if (!within)
-      throw new Error(`amount ${amount.value} ${amount.currency} exceeds the mandate of ${ownerName(m.body.owner)} (${max.value} ${max.currency}): instead of dropping the deal, that agent can pause and ask its owner (sealed form ask_owner)`);
+      throw new Error(
+        mine
+          ? `amount ${amount.value} ${amount.currency} exceeds the mandate of ${ownerName(m.body.owner)} (${max.value} ${max.currency}): instead of dropping the deal, ask your owner to approve just this agreement (symbolon_request_owner_approval), then propose it yourself (symbolon_propose_approved_agreement)`
+          : `amount ${amount.value} ${amount.currency} exceeds the mandate of ${ownerName(m.body.owner)} (${max.value} ${max.currency}): instead of dropping the deal, that agent can pause, ask its owner to approve just this agreement, and propose it itself (sealed form ask_owner)`,
+      );
   }
 }
 

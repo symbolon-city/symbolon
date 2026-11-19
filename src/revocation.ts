@@ -96,7 +96,9 @@ export function revocationSubject(r: Revocation): string {
 /** The subjects to look up for a mandate: the id and agent key of every link of its chain, and the owner key. */
 export function subjectsOf(m: Mandate): string[] {
   const links = linksOf(m);
-  return [...new Set([...links.map(mandateId), ...links.map((l) => l.body.agent), m.body.owner.key])];
+  // An approval of one agreement is also found by the id of the general mandate it extends.
+  const under = links.flatMap((l) => (l.body.type === "accord/mandate" && l.body.agreement ? [l.body.agreement.under] : []));
+  return [...new Set([...links.map(mandateId), ...under, ...links.map((l) => l.body.agent), m.body.owner.key])];
 }
 
 /**
@@ -151,7 +153,9 @@ export function revokes(r: Revocation, m: Mandate, ownerKeys: PublicKey[] | null
   return linksOf(m).some((l) => {
     const byAgent = by === l.body.agent;
     const byIssuer = l.body.type === "symbolon/submandate" && by === l.body.issuer;
-    if (target.kind === "mandate") return target.id === mandateId(l) && (byOwner || byAgent || byIssuer);
+    // Revoking the general mandate also revokes the approvals of single agreements given under it.
+    const under = l.body.type === "accord/mandate" ? l.body.agreement?.under : undefined;
+    if (target.kind === "mandate") return (target.id === mandateId(l) || target.id === under) && (byOwner || byAgent || byIssuer);
     return target.key === l.body.agent && (byOwner || (byAgent && by === target.key) || byIssuer);
   });
 }
