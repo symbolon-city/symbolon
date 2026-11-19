@@ -41,4 +41,15 @@ These are known and being worked on; reports that add something new about them a
   in principle show different histories to different people. Anyone can already keep a checked copy of every
   entry (`npm run register:copy`), which shows a rewritten history after the fact.
 - An owner is verified only by control of a web domain; free domains cost nothing.
-- The test register contains test entries and will be reset at launch.
+- The test register contains test entries and will be reset at launch: see "What survives the launch" below.
+
+## What survives the launch
+
+Proofs made on the test register stay **provable, never binding**:
+- they keep verifying with the rules of format version 1 (`docs/FORMAT.md`): the test register's key stays fixed in
+  `src/known-registers.ts`, wallets and the visitors' door keep trusting it, and every check labels such a proof
+  "test register" (what it sealed happened, but its entries were tests, never binding commitments);
+- at launch the test register stops accepting entries and stays read-only; its complete list of fingerprints, with
+  the last signed head, is published with the code, so old proofs can be checked without relying on us;
+- mandates and revocations of the test register have no effect on the launch register: owners sign new mandates there;
+- a proof is self-contained: keep the ones you care about.

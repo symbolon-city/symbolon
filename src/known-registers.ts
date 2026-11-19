@@ -13,6 +13,11 @@ export interface KnownRegister {
   key: PublicKey;
   name: string;
   since: string;
+  /**
+   * A test register: what it sealed really happened and stays verifiable, but entries were tests, never binding
+   * commitments. Proofs of a test register are labelled as such by every check (src/proof.ts).
+   */
+  test?: boolean;
 }
 
 export const KNOWN_REGISTERS: readonly KnownRegister[] = [
@@ -21,6 +26,7 @@ export const KNOWN_REGISTERS: readonly KnownRegister[] = [
     key: "ed25519:0b26c53a5dbc29498b786b0d0f308717350d48cdb234d6381e7c9473a0e26f96",
     name: "Symbolon City test register (will be reset at launch)",
     since: "2026-11-14",
+    test: true,
   },
 ];
 
@@ -37,4 +43,17 @@ function normalise(url: string): string {
 export function pinnedRegisterKey(url: string): PublicKey | undefined {
   const n = normalise(url);
   return KNOWN_REGISTERS.find((r) => normalise(r.url) === n)?.key;
+}
+
+/** The known register with this key (a proof names its register by key), or undefined. */
+export function knownRegisterByKey(key: PublicKey): KnownRegister | undefined {
+  return KNOWN_REGISTERS.find((r) => r.key === key);
+}
+
+/**
+ * Every key of the known registers: trusted by default when checking a proof, so that proofs of an earlier
+ * register (the test register after launch) stay verifiable, and are labelled.
+ */
+export function knownRegisterKeys(): PublicKey[] {
+  return KNOWN_REGISTERS.map((r) => r.key);
 }

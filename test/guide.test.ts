@@ -51,6 +51,7 @@ test("guide: common questions get prepared answers for free, without calling the
     ["Why do you use Bitcoin?", "bitcoin"],
     ["Who can read my agreements?", "privacy"],
     ["How much does it cost?", "cost"],
+    ["Will my proofs survive the launch, or is the test register reset?", "launch"],
     ["Come funziona la delega del padrone? mandate", "mandate"],
   ];
   for (const [q, id] of cases) {

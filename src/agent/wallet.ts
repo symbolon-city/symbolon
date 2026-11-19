@@ -30,6 +30,7 @@ import { createRecord, entryHash, isFullySigned, recordProblem, signRecord, type
 import type { Receipt } from "../register.js";
 import type { OwnerResolver } from "../wellknown.js";
 import type { RegisterClient } from "./client.js";
+import { knownRegisterKeys } from "../known-registers.js";
 import { checkMandate, type CounterpartyCheck } from "../counterparty.js";
 import { answerChallenge, newChallenge, possessionProblem, type PossessionAnswer } from "../possession.js";
 import { revocationsOf, signersOf, subjectsOf } from "../revocation.js";
@@ -873,7 +874,8 @@ export class Wallet {
   async verify(bundle: ProofBundle, extraTrustedLogs: PublicKey[] = []): Promise<Report> {
     const info = await this.register.info();
     return verifyProof(bundle, {
-      trustedLogs: [info.register_key, ...extraTrustedLogs],
+      // Earlier known registers too (after launch, the test register): their proofs stay verifiable, and labelled.
+      trustedLogs: [...new Set([info.register_key, ...knownRegisterKeys(), ...extraTrustedLogs])],
       ownerResolver: this.opts.ownerResolver,
       bitcoin: this.opts.bitcoin,
       revocations: (s, k) => this.register.revocations(s, k),

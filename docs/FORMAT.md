@@ -12,7 +12,8 @@ fingerprint: follow it to the letter.
 - **Status:** version 1 is used by the current **test register**, which will be reset at launch. The launch
   register will bring format changes all at once (record types renamed from `accord/*` to `symbolon/*`, clause
   names and amounts inside the signed record, alignment with IETF SCITT/COSE); they will be a version 2 of this
-  document, with its own vectors. Proofs made under version 1 stay verifiable with version 1 rules.
+  document, with its own vectors. Proofs made under version 1 stay verifiable with version 1 rules; those of the test
+  register are labelled as tests, never binding commitments (see "What survives the launch" in `SECURITY.md`).
 
 Conventions: all hex is lowercase. Times are ISO 8601 UTC strings. "Fingerprint" always means SHA-256,
 written as 64 hex characters.

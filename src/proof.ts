@@ -11,6 +11,7 @@ import { entryHash, recordProblem, type SignedRecord } from "./record.js";
 import { entryLeaf, verifyHeadSignature, type Receipt } from "./register.js";
 import { revocationsOf, signersOf, subjectsOf, type RevocationSource } from "./revocation.js";
 import type { OwnerResolver } from "./wellknown.js";
+import { knownRegisterByKey } from "./known-registers.js";
 import { verifyCosignature, type Cosignature } from "./witness.js";
 
 export interface ProofBundle {
@@ -67,6 +68,8 @@ export interface Report {
   sealedAt?: string;
   disclosed: Record<string, unknown>;
   bitcoin: AnchorStatus | { status: "absent" | "not checked" };
+  /** The register, when it is one of the known registers (src/known-registers.ts); test: its entries were tests. */
+  register?: { key: PublicKey; name: string; test?: boolean };
 }
 
 const HEX64 = /^[0-9a-f]{64}$/;
@@ -182,6 +185,9 @@ export async function verifyProof(b: ProofBundle, opts: VerifyOptions): Promise<
 
   // 3. The register: the record existed at the stated time and is unchanged.
   add("register is trusted", opts.trustedLogs.includes(head.log));
+  const known = knownRegisterByKey(head.log);
+  if (known?.test)
+    add("register is a test register", true, `${known.name}: what it sealed happened, but its entries were tests, never binding commitments`);
   add("register head signature", verifyHeadSignature(head));
   add("receipt is for this record", b.receipt.entry === entryHash(rec));
   let included = false;
@@ -283,7 +289,17 @@ export async function verifyProof(b: ProofBundle, opts: VerifyOptions): Promise<
   }
 
   const verdict: Report["verdict"] = checks.some((c) => !c.ok) ? "invalid" : gaps.length ? "incomplete" : "valid";
-  return { valid: verdict === "valid", verdict, gaps, checks, levels, sealedAt: head.time, disclosed: { ...disclosed }, bitcoin };
+  return {
+    valid: verdict === "valid",
+    verdict,
+    gaps,
+    checks,
+    levels,
+    sealedAt: head.time,
+    disclosed: { ...disclosed },
+    bitcoin,
+    ...(known ? { register: { key: known.key, name: known.name, ...(known.test ? { test: true } : {}) } } : {}),
+  };
 }
 
 function short(pk: PublicKey): string {

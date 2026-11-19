@@ -19,6 +19,7 @@ import type { RegisterClient } from "../agent/client.js";
 import { CATEGORIES, KINDS } from "../piazza/messages.js";
 import { REPORT_REASONS } from "../piazza/rules.js";
 import { homePage } from "./home.js";
+import { knownRegisterKeys } from "../known-registers.js";
 
 export const DOOR_VERSION = "0.1.0";
 export const SOURCE_URL = "https://github.com/symbolon-city/symbolon";
@@ -235,7 +236,7 @@ export function buildVisitorServer(deps: DoorDeps): McpServer {
       run(async () => {
         const info = await deps.register.info();
         return verifyProof(proof as unknown as ProofBundle, {
-          trustedLogs: [info.register_key],
+          trustedLogs: [...new Set([info.register_key, ...knownRegisterKeys()])],
           ownerResolver: deps.ownerResolver,
           bitcoin: deps.bitcoin,
           revocations: (s, k) => deps.register.revocations(s, k),
