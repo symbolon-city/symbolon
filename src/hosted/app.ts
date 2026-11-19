@@ -349,10 +349,23 @@ async function route(req: Request, deps: HostedDeps): Promise<Response> {
     if (!g || !account || account.epoch !== g.epoch) return unauthorized();
     if (req.method !== "POST")
       return json({ jsonrpc: "2.0", error: { code: -32000, message: "Method not allowed: this server is stateless, use POST" }, id: null }, 405, { ...CORS, allow: "POST" });
+    // Stateless: what the assistant can do (open a page for its user) is remembered from its initialize request.
+    const capsKey = `caps:${g.owner}:${g.client_id}`;
+    let message: unknown;
+    try {
+      message = JSON.parse(await req.clone().text());
+    } catch {
+      message = null;
+    }
+    const init = (Array.isArray(message) ? message : [message]).find((m) => m && typeof m === "object" && (m as { method?: unknown }).method === "initialize") as
+      | { params?: { capabilities?: { elicitation?: { url?: unknown } } } }
+      | undefined;
+    if (init) await putExpiring(kv, capsKey, { url: !!init.params?.capabilities?.elicitation?.url }, now + TTL.refresh);
+    const caps = await getExpiring<{ url: boolean }>(kv, capsKey, now);
     return lock.run(g.owner, async () => {
       const wallet = await openWallet(deps, g.owner, account);
       const server: McpServer = buildMcpServer(wallet, {
-        hosted: hostedOwner(deps, site, g.owner, account, wallet, now),
+        hosted: hostedOwner(deps, site, g.owner, account, wallet, now, !!caps?.url),
         ...(deps.piazzaUrl ? { piazzaUrl: deps.piazzaUrl, fetchImpl: deps.piazzaFetch } : {}),
       });
       const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
@@ -496,17 +509,35 @@ function openWallet(deps: HostedDeps, owner: string, account: Account) {
   });
 }
 
-function hostedOwner(deps: HostedDeps, site: Site, owner: string, account: Account, wallet: Wallet, now: number): HostedOwner {
+function hostedOwner(deps: HostedDeps, site: Site, owner: string, account: Account, wallet: Wallet, now: number, urlElicitation: boolean): HostedOwner {
+  const pageOf = (id: string) => `${site.origin}/owner/r/${id}`;
   const addLink = async (link: Link, expiresAt: number) => {
     const id = newSecret();
     await putExpiring(deps.kv, `link:${id}`, link, expiresAt);
     const ids = (await deps.kv.get<string[]>(`links:${owner}`)) ?? [];
     await deps.kv.put(`links:${owner}`, [...ids, id].slice(-MAX_LINKS));
-    return `${site.origin}/owner/r/${id}`;
+    return id;
+  };
+  /** The newest link still waiting, of this kind (and for this agreement). */
+  const findLink = async (match: (l: Link) => boolean) => {
+    const ids = (await deps.kv.get<string[]>(`links:${owner}`)) ?? [];
+    for (const id of [...ids].reverse()) {
+      const l = await getExpiring<Link>(deps.kv, `link:${id}`, now);
+      if (l && match(l)) return id;
+    }
+    return null;
   };
   return {
     ownerKey: account.publicKey,
-    approvalLink: (root, validUntil) => addLink({ owner, kind: "approval", root }, Math.min(Date.parse(validUntil), now + TTL.mandateRequest)),
+    urlElicitation,
+    async approvalLink(root, validUntil) {
+      const found = await findLink((l) => l.kind === "approval" && l.root === root);
+      return pageOf(found ?? (await addLink({ owner, kind: "approval", root }, Math.min(Date.parse(validUntil), now + TTL.mandateRequest))));
+    },
+    async pendingMandateLink() {
+      const found = await findLink((l) => l.kind === "mandate" && l.body.agent === wallet.agentKey);
+      return found ? pageOf(found) : null;
+    },
     async askMandate(p) {
       const from = now - MIN;
       const body = mandateBody(account.publicKey, {
@@ -517,7 +548,7 @@ function hostedOwner(deps: HostedDeps, site: Site, owner: string, account: Accou
         notAfter: new Date(from + p.days * DAY).toISOString(),
         charter: deps.charter ?? "accord-charter/0.1",
       });
-      const page = await addLink({ owner, kind: "mandate", body }, now + TTL.mandateRequest);
+      const page = pageOf(await addLink({ owner, kind: "mandate", body }, now + TTL.mandateRequest));
       const limit = body.maxAmount ? `up to ${body.maxAmount.value} ${body.maxAmount.currency} per agreement` : "with no amount limit";
       return {
         owner_page: page,

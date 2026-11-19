@@ -6,6 +6,7 @@ import assert from "node:assert/strict";
 import { Client } from "@modelcontextprotocol/sdk/client/index.js";
 import { StreamableHTTPClientTransport } from "@modelcontextprotocol/sdk/client/streamableHttp.js";
 import { InMemoryTransport } from "@modelcontextprotocol/sdk/inMemory.js";
+import { ErrorCode, McpError } from "@modelcontextprotocol/sdk/types.js";
 import { p256 } from "@noble/curves/p256";
 import { sha256 } from "@noble/hashes/sha2";
 import { HttpRegisterClient } from "../src/agent/client.js";
@@ -78,7 +79,7 @@ const postJson = (app: App, path: string, body: unknown, headers: Record<string,
   app(path, { method: "POST", headers: { "content-type": "application/json", origin: ORIGIN, ...headers }, body: JSON.stringify(body) });
 
 /** The whole "connect your assistant" dance, as an MCP client and the owner's browser do it. */
-async function connect(app: App, device: Device, o: { create: boolean }) {
+async function connect(app: App, device: Device, o: { create: boolean; opensPages?: boolean }) {
   const reg = await (await app("/register", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ redirect_uris: [REDIRECT], client_name: "Assistente di Marta" }) })).json();
   const verifier = toBase64url(crypto.getRandomValues(new Uint8Array(48)));
   const q = new URLSearchParams({ response_type: "code", client_id: reg.client_id, redirect_uri: REDIRECT, code_challenge: toBase64url(sha256(utf8(verifier))), code_challenge_method: "S256", state: "xyz", resource: ORIGIN + "/mcp" });
@@ -102,9 +103,9 @@ async function connect(app: App, device: Device, o: { create: boolean }) {
     app("/token", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams(params).toString() });
   const tok = await (await tokenReq({ grant_type: "authorization_code", code, code_verifier: verifier, client_id: reg.client_id, redirect_uri: REDIRECT })).json();
   assert.ok(tok.access_token, JSON.stringify(tok));
-  const mcp = new Client({ name: "assistant", version: "0" });
+  const mcp = new Client({ name: "assistant", version: "0" }, o.opensPages ? { capabilities: { elicitation: { url: {} } } } : {});
   await mcp.connect(new StreamableHTTPClientTransport(new URL(ORIGIN + "/mcp"), { fetch: (u, i) => app(String(u), i), requestInit: { headers: { authorization: "Bearer " + tok.access_token } } }));
-  return { call: caller(mcp), client_id: reg.client_id, tok, code, verifier, tokenReq };
+  return { call: caller(mcp), mcp, client_id: reg.client_id, tok, code, verifier, tokenReq };
 }
 
 /** A soft device that also remembers the id of the passkey it made, as a phone does. */
@@ -356,4 +357,48 @@ test("hosted: the wallets are stored encrypted, bound to their owner", async () 
   // Copied under another owner's name, it does not open.
   kv.map.set("wallet:someone:0", stored);
   await assert.rejects(new HostedWalletStorage(kv, deps.secret, "someone:0").load());
+});
+
+test("hosted: an assistant that can open pages shows its user the page to sign (URL elicitation), and calls again", async () => {
+  const { app, museum } = await city();
+  const device = newDevice();
+  const c = await connect(app, device, { create: true, opensPages: true });
+  const asked = async (p: Promise<unknown>) => {
+    const e = (await p.then(() => assert.fail("expected the page to open"), (x) => x)) as McpError;
+    assert.ok(e instanceof McpError, String(e));
+    assert.equal(e.code, ErrorCode.UrlElicitationRequired);
+    const [el] = (e.data as { elicitations: Array<{ mode: string; url: string; message: string; elicitationId: string }> }).elicitations;
+    assert.equal(el!.mode, "url");
+    return el!;
+  };
+  const ask = await c.call("symbolon_ask_owner_for_mandate", { scope: "lavori di restauro", max_amount: { value: "2000.00", currency: "EUR" }, days: 90 });
+  // Anything that needs the mandate opens the page where Marta signs it.
+  const museumMandate = await museum("symbolon_my_mandate");
+  const deal = { object: "restauro della cornice dorata", amount: { value: "2400.00", currency: "EUR" }, delivery: "2026-12-20" };
+  const m = await asked(c.mcp.callTool({ name: "symbolon_request_owner_approval", arguments: { counterparty_mandate: museumMandate, clauses: deal } }));
+  assert.equal(m.url, ask.owner_page);
+  assert.match(m.message, /has not signed your mandate yet/);
+  await signRequest(app, m.url, device);
+
+  const req = await c.call("symbolon_request_owner_approval", { counterparty_mandate: museumMandate, clauses: deal });
+  const a = await asked(c.mcp.callTool({ name: "symbolon_propose_approved_agreement", arguments: { clauses_root: req.clauses_root } }));
+  assert.equal(a.url, req.owner_page, "the same page, not a new request each time");
+  assert.match(a.message, /has not approved this agreement yet/);
+  await signRequest(app, a.url, device);
+  const offer = await c.call("symbolon_propose_approved_agreement", { clauses_root: req.clauses_root });
+  const accepted = await museum("symbolon_accept_agreement", { offer });
+  assert.ok(accepted.entry);
+});
+
+test("hosted: an assistant that cannot open pages gets the link in the answer, for the agent to pass on", async () => {
+  const { app, museum } = await city();
+  const device = newDevice();
+  const c = await connect(app, device, { create: true });
+  await assert.rejects(c.call("symbolon_my_mandate"), /no mandate yet: ask your owner .* symbolon_ask_owner_for_mandate/);
+  const ask = await c.call("symbolon_ask_owner_for_mandate", { scope: "lavori di restauro", max_amount: { value: "2000.00", currency: "EUR" }, days: 90 });
+  await assert.rejects(c.call("symbolon_my_mandate"), (e: Error) => e.message.includes(ask.owner_page) && /Give your owner this link/.test(e.message));
+  await signRequest(app, ask.owner_page, device);
+  const museumMandate = await museum("symbolon_my_mandate");
+  const req = await c.call("symbolon_request_owner_approval", { counterparty_mandate: museumMandate, clauses: { object: "x", amount: { value: "2400.00", currency: "EUR" } } });
+  await assert.rejects(c.call("symbolon_propose_approved_agreement", { clauses_root: req.clauses_root }), (e: Error) => e.message.includes(req.owner_page));
 });

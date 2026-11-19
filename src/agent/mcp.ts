@@ -3,6 +3,7 @@
 // information: they never tell the agent to do anything beyond the call.
 
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
+import { ErrorCode, McpError, UrlElicitationRequiredError } from "@modelcontextprotocol/sdk/types.js";
 import { z } from "zod";
 import type { Json } from "../canonical.js";
 import type { Amount, Mandate } from "../mandate.js";
@@ -25,13 +26,18 @@ const jsonObject = z.preprocess((v) => {
 const ok = (data: unknown) => ({ content: [{ type: "text" as const, text: JSON.stringify(data, null, 2) }] });
 const fail = (e: unknown) => ({ content: [{ type: "text" as const, text: `Error: ${(e as Error).message}` }], isError: true });
 
-async function run(fn: () => Promise<unknown> | unknown) {
+async function runPlain(fn: () => Promise<unknown> | unknown) {
   try {
     return ok(await fn());
   } catch (e) {
+    // "Your owner must open this page first" goes back to the assistant as such, not as a tool failure.
+    if (e instanceof McpError && e.code === ErrorCode.UrlElicitationRequired) throw e;
     return fail(e);
   }
 }
+
+/** True when the wallet refused because no mandate is installed yet. */
+const noMandate = (e: unknown) => e instanceof Error && e.message.startsWith("no mandate installed");
 
 /**
  * A wallet hosted for its owner (src/hosted): the owner signs on the wallet's own page with Face ID, so the agent
@@ -44,10 +50,39 @@ export interface HostedOwner {
   approvalLink(clausesRoot: string, validUntil: string): Promise<string>;
   /** Prepares a mandate for the owner to sign on the page; returns the link and what the owner will read. */
   askMandate(p: { scope: string; maxAmount?: Amount; days: number }): Promise<{ owner_page: string; for_the_owner: unknown }>;
+  /** The link of the latest mandate prepared and not yet signed, if any. */
+  pendingMandateLink(): Promise<string | null>;
+  /**
+   * The assistant declared it can open a page for its user (MCP URL elicitation, protocol 2025-11-25): then a
+   * call that needs the owner's signature answers "open this page" (error -32042) and the assistant shows it
+   * to its user and calls again; otherwise the link is in the error text, for the agent to pass on.
+   */
+  urlElicitation: boolean;
+}
+
+/** Stops a call until the owner has signed on the page: as a URL elicitation when the assistant supports it. */
+function ownerMustSign(hosted: HostedOwner, url: string, message: string): never {
+  if (hosted.urlElicitation)
+    throw new UrlElicitationRequiredError([{ mode: "url", elicitationId: url.slice(url.lastIndexOf("/") + 1), url, message }], message);
+  throw new Error(`${message} Give your owner this link (it opens the page where they sign with Face ID or a passkey), then call again: ${url}`);
 }
 
 export function buildMcpServer(wallet: Wallet, opts: { piazzaUrl?: string; fetchImpl?: typeof fetch; hosted?: HostedOwner } = {}): McpServer {
   const hosted = opts.hosted;
+  // On a hosted wallet, a call refused for lack of a mandate points to the mandate waiting for the owner's signature.
+  const run = !hosted
+    ? runPlain
+    : (fn: () => Promise<unknown> | unknown) =>
+        runPlain(async () => {
+          try {
+            return await fn();
+          } catch (e) {
+            if (!noMandate(e)) throw e;
+            const link = await hosted.pendingMandateLink();
+            if (link) ownerMustSign(hosted, link, "Your owner has not signed your mandate yet.");
+            throw new Error("no mandate yet: ask your owner what you may do, then prepare it with symbolon_ask_owner_for_mandate");
+          }
+        });
   const server = new McpServer(
     { name: "symbolon-wallet", version: "0.1.7" },
     {
@@ -262,7 +297,13 @@ export function buildMcpServer(wallet: Wallet, opts: { piazzaUrl?: string; fetch
       },
     },
     ({ clauses_root, signature, approval }) =>
-      run(() => wallet.proposeApproved({ approval: approval as unknown as Mandate | undefined, clausesRoot: clauses_root, signature })),
+      run(async () => {
+        if (hosted && clauses_root && !signature && !approval) {
+          const waiting = wallet.pendingApprovals().find((a) => a.clauses_root === clauses_root && !a.signed);
+          if (waiting) ownerMustSign(hosted, await hosted.approvalLink(clauses_root, waiting.approval_body.notAfter), "Your owner has not approved this agreement yet.");
+        }
+        return wallet.proposeApproved({ approval: approval as unknown as Mandate | undefined, clausesRoot: clauses_root, signature });
+      }),
   );
 
   server.registerTool(
