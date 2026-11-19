@@ -824,6 +824,24 @@ export class Wallet {
     return { recorded: form.about, outcome: "withdrawn", by, sealed_at: report.sealedAt };
   }
 
+  /**
+   * Everything the owner may take away (to another wallet, a lawyer, an archive): mandates, every sealed record
+   * with its full clauses and receipt (enough for anyone to rebuild and check a proof), offers and approvals
+   * waiting. Never the agent's secret keys.
+   */
+  exportForOwner() {
+    const records = Object.entries(this.state.records).map(([entry, r]) => ({ entry, ...structuredClone(r) }));
+    return {
+      type: "symbolon/owner-export",
+      v: 1,
+      agent: this.key.publicKey,
+      mandate: this.state.mandate ?? null,
+      records,
+      offers: structuredClone(this.state.offers),
+      approvals: Object.fromEntries(Object.entries(this.state.approvals ?? {}).map(([root, a]) => [root, { opened: a.opened, counterparty: a.counterparty, body: a.body, signed: !!a.signature }])),
+    };
+  }
+
   list() {
     return Object.entries(this.state.records).map(([entry, r]) => ({
       entry,

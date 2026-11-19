@@ -19,7 +19,7 @@ import type { BlockProvider } from "../anchor.js";
 import { canonical } from "../canonical.js";
 import { randomBytes, toBase64url, utf8, toHex } from "../bytes.js";
 import { passkeyChallenge, type PublicKey } from "../keys.js";
-import { mandateBody, signedMandate, type Amount, type MandateBody } from "../mandate.js";
+import { mandateBody, ownerName, signedMandate, type Amount, type MandateBody } from "../mandate.js";
 import { revocationBody, signedRevocation, type RevocationBody } from "../revocation.js";
 import type { OwnerResolver } from "../wellknown.js";
 import type { RegisterClient } from "../agent/client.js";
@@ -45,6 +45,8 @@ export const TTL = {
 } as const;
 const MAX_BODY = 64 * 1024;
 const MAX_LINKS = 50;
+/** Agents blocked before the current one, shown on the owner's page and in the export. */
+const MAX_PREVIOUS_AGENTS = 10;
 
 export interface HostedDeps {
   kv: KeyValue;
@@ -434,9 +436,57 @@ async function route(req: Request, deps: HostedDeps): Promise<Response> {
     const account = g ? await kv.get<Account>(`acct:${g.owner}`) : undefined;
     if (!g || !account || account.epoch !== g.epoch) throw new HttpError(401, "sign in again");
     const owner = g.owner;
+    const previous = async () => {
+      const out = [];
+      for (let gen = Math.max(0, account.agentGen - MAX_PREVIOUS_AGENTS); gen < account.agentGen; gen++) {
+        const stored = await deps.kv.get(`wallet:${owner}:${gen}`);
+        if (stored) out.push({ gen, wallet: await openWallet(deps, owner, account, gen) });
+      }
+      return out;
+    };
+    const proofMatch = /^\/owner\/api\/proof\/(\d{1,4})\/([0-9a-f]{64})$/.exec(path);
+    if (req.method === "GET" && proofMatch) {
+      const gen = Number(proofMatch[1]);
+      if (gen > account.agentGen) throw new HttpError(404, "unknown agent");
+      return lock.run(owner, async () => {
+        const wallet = await openWallet(deps, owner, account, gen);
+        const r = wallet.exportForOwner().records.find((x) => x.entry === proofMatch[2]);
+        if (!r) throw new HttpError(404, "unknown record");
+        // For the owner: every clause revealed. To show a third party only some, the agent makes a narrower proof.
+        return json(await wallet.createProof(r.entry, r.opened.clauses.map((c) => c.name)), 200, { "content-disposition": `attachment; filename="symbolon-proof-${r.entry.slice(0, 12)}.json"` });
+      });
+    }
+    if (req.method === "GET" && path === "/owner/api/export")
+      return lock.run(owner, async () => {
+        const agents = [...(await previous()).map((p) => ({ gen: p.gen, ...p.wallet.exportForOwner() }))];
+        agents.push({ gen: account.agentGen, ...(await openWallet(deps, owner, account)).exportForOwner() });
+        return json(
+          { type: "symbolon/owner-export-all", v: 1, owner_key: account.publicKey, exported_at: new Date(now).toISOString(), from: site.origin, agents },
+          200,
+          { "content-disposition": `attachment; filename="symbolon-wallet-export.json"` },
+        );
+      });
     if (req.method === "GET" && path === "/owner/api/state")
       return lock.run(owner, async () => {
         const wallet = await openWallet(deps, owner, account);
+        const mine = wallet.exportForOwner().mandate;
+        let revoked: unknown = null;
+        if (mine) revoked = (await wallet.checkCounterparty(mine).catch(() => null))?.revoked ?? null;
+        const history = (w: Wallet) =>
+          w
+            .exportForOwner()
+            .records.filter((r) => r.receipt)
+            .map((r) => ({
+              entry: r.entry,
+              kind: r.kind,
+              sealed_at: r.receipt!.head.time,
+              with: r.record.body.parties.filter((p) => p.agent !== w.agentKey).map((p) => {
+                const m = r.mandates.find((x) => x.body.agent === p.agent);
+                return m ? ownerName(m.body.owner) : "unknown";
+              }),
+              closed: r.closed ?? null,
+            }))
+            .sort((a, b) => b.sealed_at.localeCompare(a.sealed_at));
         const ids = (await kv.get<string[]>(`links:${owner}`)) ?? [];
         const requests: Array<{ id: string; kind: string }> = [];
         for (const id of ids) {
@@ -450,7 +500,11 @@ async function route(req: Request, deps: HostedDeps): Promise<Response> {
           mandate: wallet.whoami().mandate,
           requests,
           approvals_waiting: wallet.pendingApprovals().filter((a) => !a.signed).length,
+          mandate_revoked: revoked,
+          agent_gen: account.agentGen,
           commitments: wallet.commitments(),
+          history: history(wallet),
+          previous_agents: (await previous()).map((p) => ({ gen: p.gen, agent: p.wallet.agentKey, mandate: p.wallet.whoami().mandate, history: history(p.wallet) })),
         });
       });
     if (path === "/owner/api/block") {
@@ -500,8 +554,8 @@ function sameOrigin(req: Request, site: Site) {
   if (o !== null && o !== site.origin) throw new HttpError(403, "cross-site request refused");
 }
 
-function openWallet(deps: HostedDeps, owner: string, account: Account) {
-  return Wallet.open(new HostedWalletStorage(deps.kv, deps.secret, `${owner}:${account.agentGen}`), deps.register, {
+function openWallet(deps: HostedDeps, owner: string, account: Account, gen = account.agentGen) {
+  return Wallet.open(new HostedWalletStorage(deps.kv, deps.secret, `${owner}:${gen}`), deps.register, {
     ...(deps.ownerResolver ? { ownerResolver: deps.ownerResolver } : {}),
     ...(deps.bitcoin ? { bitcoin: deps.bitcoin } : {}),
     ...(deps.charter ? { charter: deps.charter } : {}),

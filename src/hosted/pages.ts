@@ -62,7 +62,13 @@ const T = IT ? {
   reqMandate: "Il tuo agente ti chiede questa delega", reqApproval: "Approva solo questo accordo", sign: "Firma con Face ID",
   notSign: "Se non è quello che vuoi, chiudi la pagina: la richiesta scade da sola.", signed: "Firmato. Puoi tornare al tuo assistente.",
   counterparty: "Con", generalLimit: "Il tuo limite generale resta", clauses: "Clausole (quelle vere, ricalcolate dall'impronta)", validUntil: "Valida fino al",
-  identity: "La tua chiave", amount: "Importo", error: "Errore", again: "Riprova",
+  identity: "La tua chiave", amount: "Importo",
+  proof: "Scarica la prova", agreement: "Accordo", action: "Azione", sealed: "Sigillato il", revoked: "Questa delega è stata revocata: il tuo agente non può agire.",
+  overdue: "Scaduto: controlla se è stato fatto", nextDate: "Prossima data", withdrawUntil: "Puoi ripensarci fino al",
+  waiting: "In attesa", waitingYou: "Aspetta la tua approvazione", waitingThem: "Inviato, aspetta l'altra parte",
+  history: "Storico", previousAgent: "Agente precedente (bloccato)", yours: "I tuoi dati",
+  exportWhat: "Scarica deleghe, accordi e prove in un file: sono tuoi e puoi portarli altrove. Le chiavi segrete dell'agente non ci sono.", exportAll: "Scarica tutto",
+  outcomes: { fulfilled: "eseguito", cancelled_by_agreement: "annullato d'accordo", not_fulfilled: "non eseguito", withdrawn: "ripensamento" }, error: "Errore", again: "Riprova",
 } : {
   connectTitle: "Connect your assistant", connectWho: "asks to use your Symbolon wallet", returnTo: "You will return to",
   connectWhat: "It will be able to prepare agreements on your behalf. Nothing is valid without your signature: a mandate or an approval you read here and confirm with Face ID.",
@@ -75,7 +81,13 @@ const T = IT ? {
   reqMandate: "Your agent asks you for this mandate", reqApproval: "Approve only this agreement", sign: "Sign with Face ID",
   notSign: "If this is not what you want, close the page: the request expires by itself.", signed: "Signed. You can go back to your assistant.",
   counterparty: "With", generalLimit: "Your general limit stays", clauses: "Clauses (the real ones, recomputed from the fingerprint)", validUntil: "Valid until",
-  identity: "Your key", amount: "Amount", error: "Error", again: "Try again",
+  identity: "Your key", amount: "Amount",
+  proof: "Download the proof", agreement: "Agreement", action: "Action", sealed: "Sealed on", revoked: "This mandate was revoked: your agent cannot act.",
+  overdue: "Past due: check whether it was done", nextDate: "Next date", withdrawUntil: "You can withdraw until",
+  waiting: "Waiting", waitingYou: "Waiting for your approval", waitingThem: "Sent, waiting for the other side",
+  history: "History", previousAgent: "Previous agent (blocked)", yours: "Your data",
+  exportWhat: "Download mandates, agreements and proofs in one file: they are yours and you can take them elsewhere. The agent's secret keys are not in it.", exportAll: "Download everything",
+  outcomes: { fulfilled: "fulfilled", cancelled_by_agreement: "cancelled by agreement", not_fulfilled: "not fulfilled", withdrawn: "withdrawn" }, error: "Error", again: "Try again",
 };
 document.documentElement.lang = IT ? "it" : "en";
 const app = document.getElementById("app");
@@ -163,20 +175,74 @@ async function requestView(id) {
   show(card, b, el("p", { class: "muted" }, T.notSign));
 }
 
+async function download(path, session, name) {
+  const res = await fetch(path, { headers: { authorization: "Bearer " + session } });
+  if (!res.ok) throw new Error((await res.json().catch(() => ({}))).error || res.status);
+  const url = URL.createObjectURL(await res.blob());
+  const a = el("a", { href: url, download: name });
+  document.body.append(a); a.click(); a.remove(); setTimeout(() => URL.revokeObjectURL(url), 10000);
+}
+const clauseText = (c) => Object.entries(c || {}).map(([k, v]) => k + ": " + (typeof v === "string" ? v : v && v.value && v.currency ? v.value + " " + v.currency : JSON.stringify(v))).join(" · ");
+const outcomeText = (o) => (T.outcomes[o] || o);
+
+function historyList(items, gen, session) {
+  const nodes = [];
+  for (const h of items) {
+    const b = el("button", { class: "secondary" }, T.proof);
+    b.onclick = busy(b, () => download("/owner/api/proof/" + gen + "/" + h.entry, session, "symbolon-proof-" + h.entry.slice(0, 12) + ".json"));
+    nodes.push(el("div", { class: "card" },
+      el("b", {}, (h.kind === "agreement" ? T.agreement : T.action) + (h.with.length ? " · " + h.with.join(", ") : "")),
+      el("p", { class: "muted" }, T.sealed + " " + day(h.sealed_at) + (h.closed ? " · " + outcomeText(h.closed.outcome) : "")), b));
+  }
+  return nodes;
+}
+
 async function ownerView(session) {
   const s = await api("/owner/api/state", { headers: { authorization: "Bearer " + session } });
+  const c = s.commitments || {};
   const nodes = [el("h1", {}, T.ownerTitle)];
   const m = s.mandate;
   nodes.push(el("h2", {}, T.agent), el("div", { class: "card" }, m
     ? el("dl", {}, el("dt", {}, T.scope), el("dd", { class: "big" }, m.scope), el("dt", {}, T.limit), el("dd", {}, money(m.maxAmount)), el("dt", {}, T.until), el("dd", {}, day(m.validUntil)))
-    : el("p", {}, T.noMandate), el("p", { class: "muted" }, el("code", {}, s.agent))));
+    : el("p", {}, T.noMandate),
+    s.mandate_revoked ? el("p", { class: "err" }, T.revoked) : null,
+    el("p", { class: "muted" }, el("code", {}, s.agent))));
+
   nodes.push(el("h2", {}, T.requests));
   if (!s.requests.length) nodes.push(el("p", { class: "muted" }, T.noRequests));
   for (const q of s.requests) { const b = el("button", { class: "secondary" }, T.open + " · " + (q.kind === "mandate" ? T.mandate : T.reqApproval)); b.onclick = () => location.assign("/owner/r/" + q.id); nodes.push(b); }
+
   nodes.push(el("h2", {}, T.commitments));
-  const open = (s.commitments && s.commitments.open) || [];
+  const open = c.open || [];
   if (!open.length) nodes.push(el("p", { class: "muted" }, T.noCommitments));
-  for (const c of open) nodes.push(el("div", { class: "card" }, el("b", {}, (c.with || []).map((w) => w.owner).join(", ")), el("p", { class: "muted" }, Object.entries(c.clauses).map(([k, v]) => k + ": " + (typeof v === "string" ? v : JSON.stringify(v))).join(" · "))));
+  for (const x of open) {
+    const b = el("button", { class: "secondary" }, T.proof);
+    b.onclick = busy(b, () => download("/owner/api/proof/" + s.agent_gen + "/" + x.entry, session, "symbolon-proof-" + x.entry.slice(0, 12) + ".json"));
+    nodes.push(el("div", { class: "card" },
+      el("b", {}, (x.with || []).map((w) => w.owner).join(", ")),
+      x.overdue ? el("p", { class: "err" }, T.overdue) : null,
+      x.next_date ? el("p", {}, T.nextDate + ": " + day(x.next_date.date) + " (" + x.next_date.clause + ")") : null,
+      x.can_withdraw_until ? el("p", { class: "muted" }, T.withdrawUntil + " " + day(x.can_withdraw_until)) : null,
+      el("p", { class: "muted" }, clauseText(x.clauses)), b));
+  }
+  const waiting = (c.waiting || []).concat(c.waiting_for_owner || []);
+  if (waiting.length) {
+    nodes.push(el("h2", {}, T.waiting));
+    for (const w of waiting) nodes.push(el("div", { class: "card" }, el("b", {}, ((w.to || w.with) || []).map((p) => p.owner).join(", ")),
+      el("p", { class: "muted" }, (w.ask_until ? T.waitingYou : T.waitingThem) + " · " + clauseText(w.clauses))));
+  }
+
+  const closed = (s.history || []).filter((h) => h.closed || h.kind === "action");
+  if (closed.length) nodes.push(el("h2", {}, T.history), ...historyList(closed, s.agent_gen, session));
+  for (const p of s.previous_agents || []) {
+    if (!p.history.length) continue;
+    nodes.push(el("h2", {}, T.previousAgent), el("p", { class: "muted" }, el("code", {}, p.agent)), ...historyList(p.history, p.gen, session));
+  }
+
+  const exp = el("button", { class: "secondary" }, T.exportAll);
+  exp.onclick = busy(exp, () => download("/owner/api/export", session, "symbolon-wallet-export.json"));
+  nodes.push(el("h2", {}, T.yours), el("p", { class: "muted" }, T.exportWhat), exp);
+
   const block = el("button", { class: "danger" }, T.blockConfirm);
   block.onclick = busy(block, async () => {
     const r = await api("/owner/api/block", { headers: { authorization: "Bearer " + session } });

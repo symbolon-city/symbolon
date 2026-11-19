@@ -87,11 +87,16 @@ async function main() {
     const who = await call("symbolon_whoami");
     assert.equal(who.mandate?.scope, "restoration jobs");
     console.log("ok  mandate signed on the page and installed in the wallet");
+    await call("symbolon_seal_action", { instruction: "photograph the frame before work", action: "photos taken" });
 
     // 3. Her page: sign in, see the agent, block everything.
     await page.goto(origin + "/owner");
     await page.getByRole("button", { name: /Sign in with Face ID/ }).click();
     await page.getByText(/restoration jobs/).waitFor();
+    await page.getByText(/^Action/).waitFor();
+    await page.getByRole("button", { name: /Download everything/ }).click();
+    await page.getByRole("button", { name: /Download the proof/ }).click();
+    console.log("ok  owner page: mandate, history with the sealed action, downloads");
     await page.getByRole("button", { name: /Block with Face ID/ }).click();
     await page.getByText(/^Blocked/).waitFor();
     await assert.rejects(call("symbolon_whoami"));

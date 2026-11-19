@@ -176,6 +176,23 @@ test("hosted: Marta connects her assistant with Face ID, signs her mandate on th
   assert.equal(state.mandate.scope, "lavori di restauro");
   assert.equal(state.commitments.open.length, 1);
   assert.equal(state.commitments.open[0].with[0].owner, "museo.example");
+  assert.equal(state.mandate_revoked, null);
+  assert.equal(state.history[0].with[0], "museo.example");
+  // The proof of the agreement, downloaded from her page, holds up for anyone (all clauses revealed: it is hers).
+  const auth = { authorization: "Bearer " + sess.session };
+  const dl = await app(`/owner/api/proof/0/${accepted.entry}`, { headers: auth });
+  assert.match(dl.headers.get("content-disposition")!, /attachment/);
+  const herProof = await dl.json();
+  const check = await museum("symbolon_verify_proof", { proof: herProof });
+  assert.equal(check.valid, true);
+  assert.equal(herProof.disclosures.length, 3);
+  assert.equal((await app(`/owner/api/proof/0/${accepted.entry}`)).status, 401, "only with her session");
+  // Everything she may take away: mandates, agreements with their clauses and receipts, never the agent's secret.
+  const exported = await (await app("/owner/api/export", { headers: auth })).json();
+  assert.equal(exported.agents.length, 1);
+  assert.equal(exported.agents[0].records.find((r: { entry: string }) => r.entry === accepted.entry).opened.clauses.length, 3);
+  const text = JSON.stringify(exported);
+  assert.ok(!/agentSecret|secretKey|"box"/.test(text), "no secrets in the export");
 
   // The same Marta, from another assistant (or again later): signs in with the same passkey, same wallet.
   const again = await connect(app, device, { create: false });
@@ -339,6 +356,15 @@ test("hosted: Block everything revokes the agent in the register, disconnects ev
   assert.equal(who.mandate, null);
   assert.notEqual(who.agent, oldMandate.body.agent);
   assert.ok([...kv.map.keys()].filter((k) => k.startsWith("wallet:")).length === 2);
+  // Her page shows the new agent, and the blocked one with its mandate.
+  const ch2 = await (await postJson(app, "/auth/challenge", { purpose: "owner" })).json();
+  const s2 = await (await postJson(app, "/auth/signin", { nonce: ch2.nonce, credentialId: device.credentialId, signature: device.sign(null, { challenge: fromBase64url(ch2.challenge) }) })).json();
+  const st = await (await app("/owner/api/state", { headers: { authorization: "Bearer " + s2.session } })).json();
+  assert.equal(st.agent, who.agent);
+  assert.equal(st.previous_agents.length, 1);
+  assert.equal(st.previous_agents[0].agent, oldMandate.body.agent);
+  assert.equal((await (await app("/owner/api/export", { headers: { authorization: "Bearer " + s2.session } })).json()).agents.length, 2);
+  assert.equal((await app("/owner/api/proof/7/" + "a".repeat(64), { headers: { authorization: "Bearer " + s2.session } })).status, 404);
   void deps;
 });
 
