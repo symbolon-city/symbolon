@@ -87,7 +87,7 @@ export async function upgrade(ts: Timestamp, fetchImpl: typeof fetch = fetch): P
 }
 
 export async function upgradeAnchor(a: Anchor, fetchImpl?: typeof fetch): Promise<{ anchor: Anchor; upgraded: number }> {
-  const ts = fromOtsFile(fromBase64(a.ots));
+  const ts = fromOtsFile(fromBase64(a.ots), headDigest(a.head));
   const upgraded = await upgrade(ts, fetchImpl);
   return { anchor: { ...a, ots: toBase64(toOtsFile(ts)) }, upgraded };
 }
@@ -148,9 +148,12 @@ export async function verifyTimestamp(ts: Timestamp, blocks: BlockProvider): Pro
 export async function verifyAnchor(a: Anchor, blocks: BlockProvider): Promise<AnchorStatus> {
   let ts: Timestamp;
   try {
-    ts = fromOtsFile(fromBase64(a.ots));
+    // Checked against the head's digest before the file's tree is read: a file for another head costs nothing.
+    ts = fromOtsFile(fromBase64(a.ots), headDigest(a.head));
   } catch (e) {
-    return { status: "invalid", reason: `unreadable .ots: ${(e as Error).message}` };
+    const m = (e as Error).message;
+    if (/digest/i.test(m)) return { status: "invalid", reason: ".ots is for a different head" };
+    return { status: "invalid", reason: `unreadable .ots: ${m}` };
   }
   if (!equalBytes(ts.msg, headDigest(a.head))) return { status: "invalid", reason: ".ots is for a different head" };
   return verifyTimestamp(ts, blocks);

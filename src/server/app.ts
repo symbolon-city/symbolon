@@ -1,7 +1,7 @@
 // HTTP interface of the register. Plain fetch handler: runs on Cloudflare
 // Workers and in tests. It only ever receives fingerprints.
 
-import { anchorHead, upgradeAnchor, type Anchor } from "../anchor.js";
+import { anchorHead, headDigest, upgradeAnchor, type Anchor } from "../anchor.js";
 import { allAttestations, fromOtsFile } from "../ots.js";
 import { fromBase64 } from "../bytes.js";
 import { OWNER_KEY } from "../keys.js";
@@ -296,7 +296,7 @@ export async function upgradePending(deps: AppDeps, fetchImpl?: typeof fetch): P
   for (const a of await deps.extras.pendingAnchors()) {
     const { anchor, upgraded } = await upgradeAnchor(a, fetchImpl);
     if (!upgraded) continue;
-    const hasBitcoin = allAttestations(fromOtsFile(fromBase64(anchor.ots))).some((x) => x.attestation.kind === "bitcoin");
+    const hasBitcoin = allAttestations(fromOtsFile(fromBase64(anchor.ots), headDigest(anchor.head))).some((x) => x.attestation.kind === "bitcoin");
     await deps.extras.putAnchor(anchor.head.size, anchor, hasBitcoin ? "confirmed" : "pending");
     if (hasBitcoin) confirmed++;
   }

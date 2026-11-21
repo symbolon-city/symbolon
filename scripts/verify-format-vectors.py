@@ -85,6 +85,9 @@ def main(path):
     checks.append(("approval: id", digest(a["mandate"]["body"]) == a["id"]))
     checks.append(("approval: bound to the clauses root", a["mandate"]["body"]["agreement"]["clausesRoot"] == c["root"]))
     checks.append(("approval: under mandate A", a["mandate"]["body"]["agreement"]["under"] == m["id"]))
+    rb = v["record"]["record"]["body"]
+    checks.append(("approval: bound to the record's nonce", a["mandate"]["body"]["agreement"]["nonce"] == rb["nonce"]))
+    checks.append(("approval: bound to agent B's mandate", a["mandate"]["body"]["agreement"]["withMandates"] == [rb["parties"][1]["mandate"]]))
     k = v["mandate_without_domain"]
     checks.append(("mandate without domain: id", digest(k["mandate"]["body"]) == k["id"]))
     checks.append(("mandate without domain: canonical body", canonical(k["mandate"]["body"]) == k["canonical_body"]))

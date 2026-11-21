@@ -97,7 +97,7 @@
     "id": "60903d1a15e6b2dffa1e3a0e48daa6e33ce987e9f6ed8703f7ab5e7eadac7fcd"
   },
   "mandate_approval": {
-    "note": "Approval of one agreement: valid only for clausesRoot (the clauses vector's root) with agent B, under mandate A.",
+    "note": "Approval of one agreement: valid only for clausesRoot (the clauses vector's root), with agent B under mandate B (withMandates), for the one record with this nonce, under mandate A.",
     "owner_secret_key": "232a20fc0df0e873aa59b3710f150ea949f4f6cdd58e2cf590a5c5a062c13873",
     "mandate": {
       "body": {
@@ -121,13 +121,17 @@
           "with": [
             "ed25519:e9ff8d821920bf62768f4d9a58e8429cbd932067b11165a64b5b428f0f42d721"
           ],
+          "withMandates": [
+            "08a7768e8bc7a72e2f63e4ef9b2897e24c526079e9c6fec6cafa4f5116fa152f"
+          ],
+          "nonce": "00112233445566778899aabbccddeeff",
           "under": "60903d1a15e6b2dffa1e3a0e48daa6e33ce987e9f6ed8703f7ab5e7eadac7fcd"
         }
       },
-      "signature": "0978ffd3d3fd3f9d793523ac99eb054b634886f1bd4acf299262caf481646f484fe54b2ce38c4dbb5a741ceab9567facf6a951ee05c8cac4031a5f9fb1fae604"
+      "signature": "8db13f21c62430d7ccbbac9768fb8691411b9c0c2999053538ed5ea980554d65c7ce0bc239a4833ceffa85d2ad6d133631c96d35eae75debd021faff31467907"
     },
-    "canonical_body": "{\"agent\":\"ed25519:9afba335f2b682f0a2a274657f90de07f93eaf20d392e5c2f6ffe8009cae970f\",\"agreement\":{\"clausesRoot\":\"d41e7829f40aede080977c87ec7791b290d7f4fb12f409f8a20656448505af21\",\"under\":\"60903d1a15e6b2dffa1e3a0e48daa6e33ce987e9f6ed8703f7ab5e7eadac7fcd\",\"with\":[\"ed25519:e9ff8d821920bf62768f4d9a58e8429cbd932067b11165a64b5b428f0f42d721\"]},\"charter\":\"accord-charter/0.1\",\"maxAmount\":{\"currency\":\"EUR\",\"value\":\"240.00\"},\"notAfter\":\"2026-11-21T10:00:00Z\",\"notBefore\":\"2026-11-19T10:00:00Z\",\"owner\":{\"domain\":\"owner.example\",\"key\":\"ed25519:81e7a1563645593c597179ccb8f4754cecd678340b7bc1a27a317c1766945547\"},\"scope\":\"one agreement only, of 240.00 EUR, with the agent of owner.example\",\"type\":\"accord/mandate\",\"v\":1}",
-    "id": "4f88c3d3e3df73c524a0b094dda76019240edd18e31780b6b950b844c0bdfabb"
+    "canonical_body": "{\"agent\":\"ed25519:9afba335f2b682f0a2a274657f90de07f93eaf20d392e5c2f6ffe8009cae970f\",\"agreement\":{\"clausesRoot\":\"d41e7829f40aede080977c87ec7791b290d7f4fb12f409f8a20656448505af21\",\"nonce\":\"00112233445566778899aabbccddeeff\",\"under\":\"60903d1a15e6b2dffa1e3a0e48daa6e33ce987e9f6ed8703f7ab5e7eadac7fcd\",\"with\":[\"ed25519:e9ff8d821920bf62768f4d9a58e8429cbd932067b11165a64b5b428f0f42d721\"],\"withMandates\":[\"08a7768e8bc7a72e2f63e4ef9b2897e24c526079e9c6fec6cafa4f5116fa152f\"]},\"charter\":\"accord-charter/0.1\",\"maxAmount\":{\"currency\":\"EUR\",\"value\":\"240.00\"},\"notAfter\":\"2026-11-21T10:00:00Z\",\"notBefore\":\"2026-11-19T10:00:00Z\",\"owner\":{\"domain\":\"owner.example\",\"key\":\"ed25519:81e7a1563645593c597179ccb8f4754cecd678340b7bc1a27a317c1766945547\"},\"scope\":\"one agreement only, of 240.00 EUR, with the agent of owner.example\",\"type\":\"accord/mandate\",\"v\":1}",
+    "id": "462137dd005708eb096f173aab2ac545cc0e19ef1a70f20f2029dabaeb841451"
   },
   "mandate_without_domain": {
     "note": "Identity level key: no domain field at all; the owner is known only by its key.",

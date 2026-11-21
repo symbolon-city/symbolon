@@ -589,6 +589,7 @@ export class Wallet {
 
     const others = record.body.parties.filter((p) => p.agent !== this.key.publicKey);
     const theirMandates: Mandate[] = [];
+    const generals: Mandate[] = [];
     const counterparties: CounterpartyCheck[] = [];
     for (const p of others) {
       const who = p.agent.slice(8, 16);
@@ -596,10 +597,16 @@ export class Wallet {
       if (!sig || !verifyValue(record.body, sig.signature, p.agent)) throw new Error(`the signature of agent ${who} is missing or invalid`);
       const m = mandates.find((x) => !mandateProblem(x) && mandateId(x) === p.mandate);
       if (!m || m.body.agent !== p.agent) throw new Error(`agent ${who} has no valid mandate in the offer`);
-      const notThis = approvalProblem(m, record.body);
+      const notThis = approvalProblem(m, record.body, { mandates: mandates.filter((x) => !mandateProblem(x)), at: this.now().toISOString() });
       if (notThis) throw new Error(`agent ${who}: ${notThis}`);
       counterparties.push(await this.requireCounterparty(m, opts.allowUnverifiedOwner));
       theirMandates.push(m);
+      // An owner's approval of one agreement counts only with the general mandate it extends: keep it for the proofs.
+      const under = m.body.type === "accord/mandate" ? m.body.agreement?.under : undefined;
+      if (under) {
+        const general = mandates.find((x) => !mandateProblem(x) && mandateId(x) === under);
+        if (general) generals.push(general);
+      }
     }
     await this.refuseIfRevoked(mine, "my");
     const clauses = clausesObject(opened);
@@ -617,7 +624,7 @@ export class Wallet {
       return { entry, confirmation: { type: "accord/confirmation", record: already.record, receipt: already.receipt }, counterparty: counterparties[0], counterparties, alreadySealed: true };
     }
     const receipt = await this.register.append(entry);
-    this.state.records[entry] = { kind: "agreement", record: signed, opened, mandates: [...theirMandates, mine], receipt };
+    this.state.records[entry] = { kind: "agreement", record: signed, opened, mandates: [...theirMandates, ...generals, mine], receipt };
     await this.persist();
     await this.saveToOwnerArchive();
     return { entry, confirmation: { type: "accord/confirmation", record: signed, receipt }, counterparty: counterparties[0], counterparties };
@@ -726,7 +733,11 @@ export class Wallet {
    * Files the owner's signature of a pending approval (signed on the wallet's own page), so that the agent can
    * then propose it with the clause root only. Checked now: signed by my owner's key, exactly this body.
    */
-  async recordOwnerApproval(root: string, signature: string) {
+  recordOwnerApproval(root: string, signature: string) {
+    return this.withLock(() => this.recordOwnerApprovalNow(root, signature));
+  }
+
+  private async recordOwnerApprovalNow(root: string, signature: string) {
     const pending = this.state.approvals?.[root];
     if (!pending) throw new Error("no approval request of mine matches");
     if (!withinValidity({ body: pending.body, signature: "" }, this.now().toISOString())) throw new Error("this approval request has expired: ask again");
@@ -740,7 +751,11 @@ export class Wallet {
   }
 
   /** Proposes an agreement prepared with requestApproval(), once the owner has signed the approval. */
-  async proposeApproved(p: { approval?: Mandate; clausesRoot?: string; signature?: string }): Promise<Offer> {
+  proposeApproved(p: { approval?: Mandate; clausesRoot?: string; signature?: string }): Promise<Offer> {
+    return this.withLock(() => this.proposeApprovedNow(p));
+  }
+
+  private async proposeApprovedNow(p: { approval?: Mandate; clausesRoot?: string; signature?: string }): Promise<Offer> {
     const root = p.approval?.body?.type === "accord/mandate" ? p.approval.body.agreement?.clausesRoot : p.clausesRoot;
     const pending = root ? this.state.approvals?.[root] : undefined;
     if (!pending || !root) throw new Error("no approval request of mine matches: first ask with symbolon_request_owner_approval");

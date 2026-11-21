@@ -47,11 +47,12 @@ export function buildVectors() {
     notBefore: "2026-11-19T00:00:00Z", notAfter: "2027-02-19T00:00:00Z", charter: "accord-charter/0.1",
   });
 
-  // The owner's approval of one agreement above agent A's limit: bound to the clauses root and to agent B.
+  // The owner's approval of one agreement above agent A's limit: bound to the clauses root, to agent B and its
+  // mandate, and to the nonce of the one record it allows.
   const approval = createMandate(owner, {
     ownerDomain: "owner.example", agent: agentA.publicKey, scope: "one agreement only, of 240.00 EUR, with the agent of owner.example",
     maxAmount: { value: "240.00", currency: "EUR" }, notBefore: "2026-11-19T10:00:00Z", notAfter: "2026-11-21T10:00:00Z", charter: "accord-charter/0.1",
-    agreement: { clausesRoot, with: [agentB.publicKey], under: mandateId(mandateA) },
+    agreement: { clausesRoot, with: [agentB.publicKey], withMandates: [mandateId(mandateB)], nonce: "00112233445566778899aabbccddeeff", under: mandateId(mandateA) },
   });
 
   let record: SignedRecord = {
@@ -89,7 +90,7 @@ export function buildVectors() {
     },
     mandate: { owner_secret_key: secret("owner"), mandate: mandateA, canonical_body: canonical(mandateA.body), id: mandateId(mandateA) },
     mandate_approval: {
-      note: "Approval of one agreement: valid only for clausesRoot (the clauses vector's root) with agent B, under mandate A.",
+      note: "Approval of one agreement: valid only for clausesRoot (the clauses vector's root), with agent B under mandate B (withMandates), for the one record with this nonce, under mandate A.",
       owner_secret_key: secret("owner"),
       mandate: approval,
       canonical_body: canonical(approval.body),

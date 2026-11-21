@@ -232,6 +232,11 @@ test("B3-B5 through the wallets: the approval names the record's nonce and the c
   const proof = await wA.createProof(accepted.entry, Object.keys(deal));
   const report = await wA.verify(proof);
   assert.equal(report.verdict, "valid", JSON.stringify([report.gaps, failedChecks(report)]));
+  // The counterparty's own proof also carries the general mandate behind the approval, so it verifies too.
+  const proofB = await wB.createProof(accepted.entry, Object.keys(deal));
+  assert.ok(proofB.mandates.some((m) => mandateId(m) === mandateId(mA)), "the accepting wallet keeps the general mandate");
+  const reportB = await wB.verify(proofB);
+  assert.equal(reportB.verdict, "valid", JSON.stringify([reportB.gaps, failedChecks(reportB)]));
 
   // A6: expired requests are dropped, and at most MAX_PENDING_APPROVALS wait at once.
   for (let i = 0; i < MAX_PENDING_APPROVALS; i++) await wA.requestApproval({ counterparty: mB, clauses: { ...deal, object: `press ${i}` }, hours: 1 });

@@ -435,7 +435,7 @@ export function buildMcpServer(wallet: Wallet, opts: { piazzaUrl?: string; fetch
     {
       title: "Create a proof",
       description:
-        "Builds a proof file for a sealed record, revealing only the chosen clauses. Give it to an arbitrator, insurer or counterparty; they can verify it without trusting anyone.",
+        "Builds a proof file for a sealed record, revealing only the chosen clauses. Give it to an arbitrator, insurer or counterparty; they can verify it without trusting anyone. If a party's mandate has a spending limit, reveal every clause: otherwise the verdict is \"incomplete\" (a price could hide in a clause not shown).",
       inputSchema: {
         entry: z.string().regex(/^[0-9a-f]{64}$/).describe("Record fingerprint from symbolon_list_records"),
         reveal: z.array(z.string()).max(50).describe("Names of the clauses to reveal; [] reveals none"),
