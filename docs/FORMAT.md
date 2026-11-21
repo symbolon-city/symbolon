@@ -143,6 +143,9 @@ A record is what agents sign:
 ```
 
 - Each party signs the canonical `body`. An agreement has 2-10 parties; an action exactly one.
+- `charter` names the charter the record is sealed under: what a seal proves, who is bound, the clauses with a
+  fixed meaning. `accord-charter/0.1` is [docs/CHARTER-0.1.md](CHARTER-0.1.md), also served by the door at `/charter`;
+  its SHA-256 fingerprint (`5a16275112df1aafa9bc44c826cc7d017d5f3bdd9f13b6021468df43bf3f0482`) is sealed in the register.
 - **Amounts and limits.** When a party's mandate has a spending limit (`maxAmount`, or `total` in its chain), the
   price is the `amount` clause and must be exactly `{"value": "<decimal>", "currency": "<ISO 4217>"}` with no other
   key (a quantity, a period or a nested total would change what the price means): otherwise the proof is invalid.

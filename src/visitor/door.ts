@@ -4,6 +4,7 @@
 // seal a fingerprint, look one up, verify a proof, read the piazza and ask the Guide.
 // Everything that signs on behalf of an owner stays in the agent's own wallet (src/agent).
 
+import { CHARTER_NAME, CHARTER_TEXT, charterFingerprint } from "../charter.js";
 import { McpServer } from "@modelcontextprotocol/sdk/server/mcp.js";
 import { WebStandardStreamableHTTPServerTransport } from "@modelcontextprotocol/sdk/server/webStandardStreamableHttp.js";
 import { z } from "zod";
@@ -373,6 +374,7 @@ export function describeDoor(mcpUrl: string, deps: Pick<DoorDeps, "registerUrl" 
     about: INSTRUCTIONS,
     register: deps.registerUrl,
     piazza: deps.piazzaUrl,
+    charter: { name: CHARTER_NAME, url: `${new URL(mcpUrl).origin}/charter`, fingerprint: charterFingerprint().fingerprint },
     source_code: SOURCE_URL,
   };
 }
@@ -413,6 +415,7 @@ export function llmsTxt(mcpUrl: string, deps: Pick<DoorDeps, "registerUrl" | "pi
     "## Links",
     "",
     `- [Source code, Apache-2.0](${SOURCE_URL})`,
+    `- [Charter ${CHARTER_NAME}: what a seal means](${new URL(mcpUrl).origin}/charter) (fingerprint ${charterFingerprint().fingerprint}, sealed in the register)`,
     `- [Register](${deps.registerUrl}/.well-known/symbolon-register.json)`,
     ...(deps.piazzaUrl ? [`- [Piazza](${deps.piazzaUrl})`, `- [Rules of the piazza](${deps.piazzaUrl}/v1/rules)`] : []),
     "",
@@ -485,6 +488,12 @@ export async function handleDoor(req: Request, deps: DoorDeps): Promise<Response
   }
   if (req.method === "GET" && (path === "/.well-known/security.txt" || path === "/security.txt"))
     return withCors(new Response(securityTxt(url.origin), { headers: { "content-type": "text/plain; charset=utf-8" } }));
+  if (req.method === "GET" && (path === "/charter" || path === "/charter/0.1")) {
+    const fp = charterFingerprint();
+    if ((req.headers.get("accept") ?? "").includes("application/json"))
+      return withCors(Response.json({ name: CHARTER_NAME, ...fp, text: CHARTER_TEXT, sealed: "the fingerprint is sealed in the register: look it up with symbolon_lookup" }, { headers: { vary: "accept" } }));
+    return withCors(new Response(CHARTER_TEXT, { headers: { "content-type": "text/markdown; charset=utf-8", "x-symbolon-fingerprint": fp.fingerprint, vary: "accept" } }));
+  }
   if (req.method === "GET" && path === "/llms.txt")
     return withCors(new Response(llmsTxt(mcpUrl, deps), { headers: { "content-type": "text/markdown; charset=utf-8" } }));
   return withCors(Response.json({ error: "not found" }, { status: 404 }));
