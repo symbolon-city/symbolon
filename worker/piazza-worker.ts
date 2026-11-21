@@ -4,11 +4,17 @@
 // DEMO_OWNER_SECRET (secret, optional: owner key of the demonstration city; its public key is published too),
 // PIAZZA_URL (public address, used by the scheduled demonstration run).
 // The demo owner keys are published at this piazza's own /.well-known/symbolon.json (also at the earlier accord.json path).
-// Cron: the demonstration agents keep one example post each on the board (src/piazza/demo.ts).
+// INTERNAL_WRITE_SECRET (secret, optional): sent as x-symbolon-internal on calls to the register, which gives the
+// piazza's own seals their reserved lane there instead of the shared bucket of clients without an address.
+// CLIENT_HASH_SECRET (secret, optional): key of the daily one-way fingerprint of visitors (see PiazzaDeps.clientHashSecret).
+// Cron: upkeep (failed seals sealed again, old sealed forms, nonces, counters and Guide answers deleted:
+// maintainPiazza in src/piazza/app.ts), then the demonstration agents keep one example post each on the board (src/piazza/demo.ts).
 
 import { keyPairFromSecret } from "../src/keys.js";
 import { httpOwnerResolver, type OwnerResolver } from "../src/wellknown.js";
-import { handlePiazza, type PiazzaDeps } from "../src/piazza/app.js";
+import { handlePiazza, maintainPiazza, type PiazzaDeps } from "../src/piazza/app.js";
+import { clientKeyOfRequest } from "../src/client-key.js";
+import { OwnerKeyCache, cachedOwnerResolver } from "../src/visitor/owner-cache.js";
 import { demoPartnerOwner, runDemoAgreement, runDemoCity } from "../src/piazza/demo.js";
 import { HttpRegisterClient } from "../src/agent/client.js";
 import { D1PiazzaStore, PIAZZA_MIGRATIONS, PIAZZA_SCHEMA } from "../src/piazza/stores.js";
@@ -33,10 +39,14 @@ interface Env {
   DEMO_DAILY_WRITES?: string;
   /** Domain of the second demonstration owner (its key is served by the door at /.well-known/symbolon.json). */
   DEMO_PARTNER_DOMAIN?: string;
+  /** Secret shared with the register: its reserved lane for the piazza's own seals. */
+  INTERNAL_WRITE_SECRET?: string;
+  /** Secret of the visitors' daily one-way fingerprint. */
+  CLIENT_HASH_SECRET?: string;
 }
 
 let schemaReady = false;
-const cache = new Map<string, { keys: string[] | null; at: number }>();
+const cache = new OwnerKeyCache();
 
 function demoKeys(env: Env): string[] {
   const keys = (env.DEMO_OWNER_KEY ?? "").split(",").map((k) => k.trim()).filter(Boolean);
@@ -45,18 +55,15 @@ function demoKeys(env: Env): string[] {
 }
 
 function resolver(env: Env, host: string): OwnerResolver {
-  const http = httpOwnerResolver();
+  // A board page checks the owners of up to 50 posts: room for one lookup per post (cache misses only).
+  const http = cachedOwnerResolver(cache, httpOwnerResolver(), 50);
   return async (domain) => {
     if (env.DEMO_OWNER_SECRET && domain === env.DEMO_PARTNER_DOMAIN) return [demoPartnerOwner(env.DEMO_OWNER_SECRET).publicKey];
     if (domain === host) {
       const keys = demoKeys(env);
       return keys.length ? keys : null;
     }
-    const hit = cache.get(domain);
-    if (hit && Date.now() - hit.at < 5 * 60_000) return hit.keys;
-    const keys = await http(domain);
-    cache.set(domain, { keys, at: Date.now() });
-    return keys;
+    return http(domain);
   };
 }
 
@@ -70,7 +77,11 @@ async function ready(env: Env) {
 function registerCall(env: Env, path: string, init?: RequestInit): Promise<Response> {
   const req = new Request(env.REGISTER_URL.replace(/\/+$/, "") + path, {
     ...init,
-    headers: { ...(init?.headers as Record<string, string> | undefined), "user-agent": "symbolon-piazza" },
+    headers: {
+      ...(init?.headers as Record<string, string> | undefined),
+      "user-agent": "symbolon-piazza",
+      ...(env.INTERNAL_WRITE_SECRET ? { "x-symbolon-internal": env.INTERNAL_WRITE_SECRET } : {}),
+    },
   });
   return env.REGISTER ? env.REGISTER.fetch(req) : fetch(req);
 }
@@ -101,7 +112,8 @@ function deps(env: Env, origin: string, defer?: (p: Promise<unknown>) => void): 
       askModel: env.GUIDE_ANTHROPIC_API_KEY ? claudeAskModel(env.GUIDE_ANTHROPIC_API_KEY) : undefined,
       budgetMicroUsd: env.GUIDE_DAILY_BUDGET_MICRO_USD ? Number(env.GUIDE_DAILY_BUDGET_MICRO_USD) : undefined,
     },
-    clientKey: (r) => r.headers.get("cf-connecting-ip") ?? "unknown",
+    clientKey: clientKeyOfRequest,
+    clientHashSecret: env.CLIENT_HASH_SECRET,
   };
 }
 
@@ -118,7 +130,7 @@ export default {
       return Response.json({ symbolon: 1, domain: env.DEMO_PARTNER_DOMAIN, keys: [demoPartnerOwner(env.DEMO_OWNER_SECRET).publicKey], note: "second demonstration owner of the city, declared as such" });
     }
     if (req.method === "POST" && env.ENVELOPE_LIMIT) {
-      const ok = (await env.ENVELOPE_LIMIT.limit({ key: req.headers.get("cf-connecting-ip") ?? "unknown" })).success;
+      const ok = (await env.ENVELOPE_LIMIT.limit({ key: clientKeyOfRequest(req) })).success;
       if (!ok) return Response.json({ error: "too many requests, retry in a minute" }, { status: 429 });
     }
     await ready(env);
@@ -126,8 +138,11 @@ export default {
   },
 
   async scheduled(_event: { cron: string }, env: Env): Promise<void> {
-    if (!env.DEMO_OWNER_SECRET || !env.PIAZZA_URL) return;
     await ready(env);
+    const origin = (env.PIAZZA_URL ?? "https://piazza.invalid").replace(/\/+$/, "");
+    const upkeep = await maintainPiazza(deps(env, origin)).catch((e) => ({ error: String(e) }));
+    console.log("upkeep:", JSON.stringify(upkeep));
+    if (!env.DEMO_OWNER_SECRET || !env.PIAZZA_URL) return;
     const result = await runDemoCity({
       deps: deps(env, env.PIAZZA_URL.replace(/\/+$/, "")),
       ownerSecret: env.DEMO_OWNER_SECRET,

@@ -187,6 +187,12 @@ export const GUIDE_LIMITS = {
   dailyBudgetMicroUsd: 500_000,
   feedbackPerDay: 5,
   feedbackMaxChars: 500,
+  /** The most one caller (visitor network or citizen owner) may spend of the daily budget. */
+  clientShareOfBudget: 0.05,
+  /** The most the model may spend in one hour (UTC) of the daily budget: draining it takes a whole working day. */
+  hourlyShareOfBudget: 0.125,
+  /** Days a model answer is kept and reused; after that the question goes to the model again. */
+  answerKeepDays: 30,
 };
 
 /** Haiku 5.5 prices, in millionths of a dollar per token (up to 100K-token prompts). */
@@ -205,7 +211,8 @@ export interface ModelAnswer {
 export type AskModel = (system: string, question: string) => Promise<ModelAnswer>;
 
 export interface GuideStore {
-  cachedAnswer(key: string): Promise<string | null>;
+  /** A kept answer, only if saved at or after `notBefore` (ISO 8601). */
+  cachedAnswer(key: string, notBefore?: string): Promise<string | null>;
   saveAnswer(key: string, question: string, answer: string, at: string): Promise<void>;
   /** Increments and returns the counter for (day, name). */
   bump(day: string, name: string, by?: number): Promise<number>;
@@ -233,6 +240,49 @@ export const GUIDE_AI_DISCLOSURE =
   "Questions without a prepared answer are answered by an AI model (Claude, by Anthropic): the question text is sent to Anthropic to write the answer, " +
   "and new answers are kept to be reused. Do not include personal data.";
 
+/** Typography models like, folded to the characters the content rules allow; backticks dropped. */
+function plainTypography(s: string): string {
+  return s
+    .replace(/[\u2014\u2015]/g, " - ")
+    .replace(/[\u2018\u2019\u201A\u2032]/g, "'")
+    .replace(/[\u201C\u201D\u201E\u2033]/g, '"')
+    .replace(/\u2026/g, "...")
+    .replace(/`/g, "")
+    .replace(/\s+/g, " ")
+    .trim();
+}
+
+let citedTokens: string[] | null = null;
+/**
+ * Words of the knowledge that the content rules would refuse on their own (tool names with underscores,
+ * https://<owner-domain>/.well-known/symbolon.json, file names): the Guide may cite these, and only these.
+ */
+function knowledgeTokens(): string[] {
+  if (!citedTokens)
+    citedTokens = [
+      ...new Set(
+        knowledgeText()
+          .split(/\s+/)
+          .map((t) => t.replace(/^[("']+/, "").replace(/[.,;:!?)"']+$/, ""))
+          .filter((t) => t && checkText("t", t, { allowAiWords: true, allowSecretWords: true }) !== null),
+      ),
+    ].sort((a, b) => b.length - a.length);
+  return citedTokens;
+}
+
+/**
+ * The Guide's answer as it may be shown: the model's text with its typography made plain, or null when it breaks
+ * the piazza's content rules (links other than the ones in the knowledge, contacts, secrets, text addressed to AI
+ * systems). The Guide talks about keys and passwords (never to ask for them), so only those words are allowed.
+ */
+export function guideAnswerText(raw: string): string | null {
+  const text = plainTypography(raw).slice(0, 1200);
+  if (!text) return null;
+  let neutral = text;
+  for (const t of knowledgeTokens()) neutral = neutral.split(t).join(" ");
+  return checkText("answer", neutral, { allowSecretWords: true }) ? null : text;
+}
+
 function topicsList() {
   return "I can answer about: " + FAQ.map((e) => e.q).join(" ");
 }
@@ -258,10 +308,13 @@ export async function askGuide(
     return { status: 200, body: { answer: faq.a, source: "fixed", faqId: faq.id, ...prepared } };
   }
   const key = digest(norm(q));
-  const cached = await deps.store.cachedAnswer(key);
-  if (cached) {
+  const keptSince = new Date(now.getTime() - GUIDE_LIMITS.answerKeepDays * 86_400_000).toISOString();
+  const cached = await deps.store.cachedAnswer(key, keptSince);
+  // Checked again when served: an answer kept before the check existed (or under older rules) is not reused.
+  const cachedOk = cached ? guideAnswerText(cached) : null;
+  if (cachedOk) {
     await deps.store.bump(day, "guide:cached");
-    return { status: 200, body: { answer: cached, source: "cached", ...byAi } };
+    return { status: 200, body: { answer: cachedOk, source: "cached", ...byAi } };
   }
   const budget = deps.budgetMicroUsd ?? GUIDE_LIMITS.dailyBudgetMicroUsd;
   const quotaName = `guide:model:${who.tier}:${digest(who.key).slice(0, 32)}`;
@@ -281,23 +334,42 @@ export async function askGuide(
   const system = GUIDE_SYSTEM + knowledgeText();
   // Worst case of one call: the whole prompt (about 3 characters per token, rounded up) and the maximum answer.
   const reserve = Math.ceil(((system.length + q.length) / 3) * PRICE_MICRO_USD.input + GUIDE_MAX_OUTPUT_TOKENS * PRICE_MICRO_USD.output);
-  const spentWithMine = await deps.store.bump(day, "guide:spent", reserve);
-  if (spentWithMine - reserve >= budget) {
-    await deps.store.bump(day, "guide:spent", -reserve);
-    return unavailable("The Guide answers only prepared questions for the rest of today.");
+  // Three spending counters, each reserved the same way: the whole day, this hour (UTC), and this caller.
+  // An attacker with many addresses cannot spend more than one hour's slice per hour, nor one caller's share.
+  // A slice is never smaller than one answer, so a small budget is not cut below what the day allows.
+  const slice = (share: number) => Math.max(reserve, Math.ceil(budget * share));
+  const spending: Array<{ name: string; cap: number; why: string }> = [
+    { name: "guide:spent", cap: budget, why: "The Guide answers only prepared questions for the rest of today." },
+    { name: `guide:spent:h${now.toISOString().slice(11, 13)}`, cap: slice(GUIDE_LIMITS.hourlyShareOfBudget), why: "The Guide answers only prepared questions for the rest of this hour." },
+    { name: `${quotaName}:spent`, cap: slice(GUIDE_LIMITS.clientShareOfBudget), why: "You reached today's share of the Guide's new answers." },
+  ];
+  const adjust = async (by: number, upTo = spending.length) => {
+    for (const c of spending.slice(0, upTo)) await deps.store.bump(day, c.name, by);
+  };
+  for (const [i, c] of spending.entries()) {
+    if ((await deps.store.bump(day, c.name, reserve)) - reserve >= c.cap) {
+      await adjust(-reserve, i + 1);
+      return unavailable(c.why);
+    }
   }
   let m: ModelAnswer;
   try {
     m = await deps.askModel(system, q);
   } catch {
-    await deps.store.bump(day, "guide:spent", -reserve);
+    await adjust(-reserve);
     return unavailable("The Guide could not answer right now.");
   }
   const cost = Math.ceil(m.inputTokens * PRICE_MICRO_USD.input + m.outputTokens * PRICE_MICRO_USD.output);
-  if (cost !== reserve) await deps.store.bump(day, "guide:spent", cost - reserve);
+  if (cost !== reserve) await adjust(cost - reserve);
   await deps.store.bump(day, "guide:model");
-  const text = m.text.trim().slice(0, 1200);
-  if (m.refused || !text) return unavailable("I cannot answer this question.");
+  if (m.refused || !m.text.trim()) return unavailable("I cannot answer this question.");
+  // The model's text follows the same content rules as everything else in the piazza; if it does not, it is
+  // neither shown nor kept.
+  const text = guideAnswerText(m.text);
+  if (!text) {
+    await deps.store.bump(day, "guide:filtered");
+    return unavailable("I cannot answer this question.");
+  }
   await deps.store.saveAnswer(key, q, text, now.toISOString());
   return { status: 200, body: { answer: text, source: "model", ...byAi } };
 }

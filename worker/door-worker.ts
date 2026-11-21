@@ -7,6 +7,8 @@ import { HttpRegisterClient } from "../src/agent/client.js";
 import { esploraProvider } from "../src/anchor.js";
 import { httpOwnerResolver, type OwnerResolver } from "../src/wellknown.js";
 import { handleDoor } from "../src/visitor/door.js";
+import { clientKeyOfRequest } from "../src/client-key.js";
+import { OwnerKeyCache, cachedOwnerResolver } from "../src/visitor/owner-cache.js";
 
 interface Service {
   fetch(req: Request): Promise<Response>;
@@ -22,9 +24,13 @@ interface Env {
   DEMO_PARTNER_DOMAIN?: string;
 }
 
-const cache = new Map<string, { keys: string[] | null; at: number }>();
+/** Owner keys of other sites, shared by all requests of this isolate: bounded, least recently used go first. */
+const cache = new OwnerKeyCache();
 
-/** Calls a sibling worker through its binding, passing on the visitor's address for its own limits. */
+/**
+ * Calls a sibling worker through its binding, passing on the visitor's address for its own limits (they key it
+ * by /64 for IPv6, src/client-key.ts). Never adds the internal header: visitors' calls use the visitors' lanes.
+ */
 function via(service: Service, client: string): typeof fetch {
   return async (input, init) => {
     const req = new Request(String(input), init);
@@ -44,7 +50,7 @@ export default {
       const res = await via(env.PIAZZA, client)(env.PIAZZA_URL.replace(/\/+$/, "") + "/v1/demo/partner");
       return new Response(res.body, { status: res.status, headers: { "content-type": "application/json", "access-control-allow-origin": "*" } });
     }
-    if (req.method === "POST" && env.DOOR_LIMIT && !(await env.DOOR_LIMIT.limit({ key: client })).success)
+    if (req.method === "POST" && env.DOOR_LIMIT && !(await env.DOOR_LIMIT.limit({ key: clientKeyOfRequest(req) })).success)
       return Response.json({ jsonrpc: "2.0", error: { code: -32000, message: "too many requests, retry in a minute" }, id: null }, { status: 429 });
 
     const registerUrl = env.REGISTER_URL.replace(/\/+$/, "");
@@ -52,8 +58,9 @@ export default {
     const registerFetch = via(env.REGISTER, client);
     const piazzaFetch = env.PIAZZA ? via(env.PIAZZA, client) : undefined;
 
-    // Owner keys: siblings through their bindings, everyone else over the internet (cached 5 minutes).
-    const http = httpOwnerResolver();
+    // Owner keys: siblings through their bindings, everyone else over the internet (cached 5 minutes, at most
+    // a few new lookups per request).
+    const http = cachedOwnerResolver(cache, httpOwnerResolver());
     const siblings = httpOwnerResolver(async (input, init) => {
       const host = new URL(String(input)).host;
       if (piazzaFetch && piazzaUrl && host === new URL(piazzaUrl).host) return piazzaFetch(input, init);
@@ -66,11 +73,7 @@ export default {
       }
       const isSibling = [registerUrl, piazzaUrl].some((u) => u && new URL(u).host === domain);
       if (isSibling) return siblings(domain);
-      const hit = cache.get(domain);
-      if (hit && Date.now() - hit.at < 5 * 60_000) return hit.keys;
-      const keys = await http(domain);
-      cache.set(domain, { keys, at: Date.now() });
-      return keys;
+      return http(domain);
     };
 
     return handleDoor(req, {

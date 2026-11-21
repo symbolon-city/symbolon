@@ -6,19 +6,46 @@ import type { BoxKeyClaim } from "../channel.js";
 import type { Tier } from "./guide.js";
 import { inSite } from "./site.js";
 
+/** Daily totals of the Guide (no client in them): kept by the clean-up, as statistics. */
+export const KEPT_COUNTERS = ["guide:questions", "guide:fixed", "guide:cached", "guide:model", "guide:spent", "guide:filtered"];
+
+/** What the scheduled clean-up deletes: everything older than these times (ISO 8601). */
+export interface PruneCutoffs {
+  /** Sealed forms (kept CHANNEL_LIMITS.keepDays for their recipient, then deleted). */
+  messagesBefore: string;
+  /** Used envelope nonces (envelopes older than a few minutes are refused anyway). */
+  noncesBefore: string;
+  /** Daily counters (quotas per client, owner or agent): days before this day (YYYY-MM-DD). The "all" counters and KEPT_COUNTERS are kept. */
+  countersBeforeDay: string;
+  /** Feedback to the Guide. */
+  feedbackBefore: string;
+  /** Answers of the Guide's model kept for reuse. */
+  answersBefore: string;
+}
+
 export class MemoryPiazzaStore implements PiazzaStore {
   private nonces = new Set<string>();
   private postsById = new Map<string, StoredPost>();
   private contacts: StoredContact[] = [];
-  private answers = new Map<string, string>();
+  private answers = new Map<string, { answer: string; at: string }>();
   private counters = new Map<string, number>();
   readonly feedback: Array<{ at: string; tier: Tier; stage: string | null; text: string }> = [];
 
-  async cachedAnswer(key: string) {
-    return this.answers.get(key) ?? null;
+  async cachedAnswer(key: string, notBefore = "") {
+    const a = this.answers.get(key);
+    return a && a.at >= notBefore ? a.answer : null;
   }
-  async saveAnswer(key: string, _q: string, answer: string) {
-    this.answers.set(key, answer);
+  async saveAnswer(key: string, _q: string, answer: string, at: string) {
+    this.answers.set(key, { answer, at });
+  }
+  async purgeAnswers(o: { key?: string; before?: string } = {}) {
+    let n = 0;
+    for (const [k, a] of this.answers)
+      if ((o.key === undefined || k === o.key) && (o.before === undefined || a.at < o.before)) {
+        this.answers.delete(k);
+        n++;
+      }
+    return n;
   }
   async bump(day: string, name: string, by = 1) {
     const k = day + "|" + name;
@@ -33,9 +60,10 @@ export class MemoryPiazzaStore implements PiazzaStore {
     this.feedback.push(f);
   }
 
-  async useNonce(nonce: string) {
+  async useNonce(nonce: string, at = "") {
     if (this.nonces.has(nonce)) return false;
     this.nonces.add(nonce);
+    this.nonceAt.set(nonce, at);
     return true;
   }
   async addPost(p: StoredPost) {
@@ -68,6 +96,28 @@ export class MemoryPiazzaStore implements PiazzaStore {
   async markRevoked(id: string) {
     const p = this.postsById.get(id);
     if (p && p.status === "active") p.status = "revoked";
+  }
+  async markOwnerKeyGone(id: string) {
+    const p = this.postsById.get(id);
+    if (p && p.status === "active") p.status = "owner_key_gone";
+  }
+  async unsealedPosts(createdBefore: string, limit: number) {
+    return [...this.postsById.values()]
+      .filter((p) => p.registerIndex === null && p.createdAt < createdBefore)
+      .sort((a, b) => a.createdAt.localeCompare(b.createdAt))
+      .slice(0, limit)
+      .map((p) => p.id);
+  }
+  private nonceAt = new Map<string, string>();
+  async prune(c: PruneCutoffs) {
+    this.messages = this.messages.filter((m) => m.createdAt >= c.messagesBefore);
+    for (const [n, at] of this.nonceAt) if (at < c.noncesBefore) (this.nonceAt.delete(n), this.nonces.delete(n));
+    for (const k of this.counters.keys()) {
+      const day = k.slice(0, k.indexOf("|"));
+      if (/^\d{4}-\d{2}-\d{2}/.test(day) && day < c.countersBeforeDay && !KEPT_COUNTERS.includes(k.slice(day.length + 1))) this.counters.delete(k);
+    }
+    this.feedback.splice(0, this.feedback.length, ...this.feedback.filter((f) => f.at >= c.feedbackBefore));
+    await this.purgeAnswers({ before: c.answersBefore });
   }
   async countPostsByOwner(site: string, since: string) {
     return [...this.postsById.values()].filter((p) => inSite(p.ownerDomain, site) && p.createdAt >= since).length;
@@ -175,6 +225,9 @@ CREATE TABLE IF NOT EXISTS box_keys (agent TEXT PRIMARY KEY, claim TEXT NOT NULL
 CREATE TABLE IF NOT EXISTS messages (id TEXT PRIMARY KEY, to_agent TEXT NOT NULL, from_agent TEXT NOT NULL, from_owner TEXT NOT NULL, post_id TEXT NOT NULL, envelope TEXT NOT NULL, created_at TEXT NOT NULL);
 CREATE INDEX IF NOT EXISTS messages_to ON messages (to_agent, created_at);
 CREATE INDEX IF NOT EXISTS messages_from ON messages (from_agent, created_at);
+CREATE INDEX IF NOT EXISTS messages_at ON messages (created_at);
+CREATE INDEX IF NOT EXISTS nonces_at ON nonces (at);
+CREATE INDEX IF NOT EXISTS posts_unsealed ON posts (register_index, created_at);
 `;
 
 /** Changes to tables created before them; each may fail harmlessly if already applied. */
@@ -195,9 +248,18 @@ const toPost = (r: PostRow): StoredPost => ({
 
 export class D1PiazzaStore implements PiazzaStore {
   constructor(private readonly db: D1Like) {}
-  async cachedAnswer(key: string) {
-    const r = await this.db.prepare("SELECT answer FROM guide_answers WHERE key = ?").bind(key).first<{ answer: string }>();
+  async cachedAnswer(key: string, notBefore = "") {
+    const r = await this.db.prepare("SELECT answer FROM guide_answers WHERE key = ? AND at >= ?").bind(key, notBefore).first<{ answer: string }>();
     return r?.answer ?? null;
+  }
+  /** Deletes kept answers of the Guide: one (key), those older than `before`, or all (no option). Returns how many. */
+  async purgeAnswers(o: { key?: string; before?: string } = {}) {
+    const r = await this.db
+      .prepare("DELETE FROM guide_answers WHERE (? IS NULL OR key = ?) AND (? IS NULL OR at < ?)")
+      .bind(o.key ?? null, o.key ?? null, o.before ?? null, o.before ?? null)
+      .run();
+    const done = r as { meta?: { changes?: number }; changes?: number } | undefined; // D1: meta.changes; node:sqlite: changes
+    return Number(done?.meta?.changes ?? done?.changes ?? 0);
   }
   async saveAnswer(key: string, question: string, answer: string, at: string) {
     await this.db.prepare("INSERT OR REPLACE INTO guide_answers (key, question, answer, at) VALUES (?, ?, ?, ?)").bind(key, question, answer, at).run();
@@ -259,6 +321,28 @@ export class D1PiazzaStore implements PiazzaStore {
   }
   async markRevoked(id: string) {
     await this.db.prepare("UPDATE posts SET status = 'revoked' WHERE id = ? AND status = 'active'").bind(id).run();
+  }
+  async markOwnerKeyGone(id: string) {
+    await this.db.prepare("UPDATE posts SET status = 'owner_key_gone' WHERE id = ? AND status = 'active'").bind(id).run();
+  }
+  async unsealedPosts(createdBefore: string, limit: number) {
+    const r = await this.db
+      .prepare("SELECT id FROM posts WHERE register_index IS NULL AND created_at < ? ORDER BY created_at LIMIT ?")
+      .bind(createdBefore, limit)
+      .all<{ id: string }>();
+    return r.results.map((x) => x.id);
+  }
+  async prune(c: PruneCutoffs) {
+    const kept = KEPT_COUNTERS.map(() => "?").join(", ");
+    for (const [sql, ...v] of [
+      ["DELETE FROM messages WHERE created_at < ?", c.messagesBefore],
+      ["DELETE FROM nonces WHERE at < ?", c.noncesBefore],
+      // Only dated counters: the "all" counters (agents per owner) and the Guide's daily totals are kept.
+      [`DELETE FROM guide_counters WHERE day GLOB '[0-9][0-9][0-9][0-9]-*' AND day < ? AND name NOT IN (${kept})`, c.countersBeforeDay, ...KEPT_COUNTERS],
+      ["DELETE FROM guide_feedback WHERE at < ?", c.feedbackBefore],
+      ["DELETE FROM guide_answers WHERE at < ?", c.answersBefore],
+    ])
+      await this.db.prepare(sql).bind(...v).run();
   }
   // A site matches its own domain and every subdomain (domains are checked lowercase letters, digits,
   // hyphens and dots, so they hold no LIKE wildcards).

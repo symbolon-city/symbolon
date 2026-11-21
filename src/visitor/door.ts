@@ -10,7 +10,7 @@ import { z } from "zod";
 import type { BlockProvider } from "../anchor.js";
 import { checkMandate } from "../counterparty.js";
 import { fingerprintJson, fingerprintText } from "../fingerprint.js";
-import type { Mandate } from "../mandate.js";
+import { verifyMandateSignature, type Mandate } from "../mandate.js";
 import { newChallenge, possessionProblem } from "../possession.js";
 import { verifyProof, type ProofBundle } from "../proof.js";
 import { revocationProblem, type Revocation } from "../revocation.js";
@@ -118,7 +118,18 @@ export function buildVisitorServer(deps: DoorDeps): McpServer {
       annotations: { readOnlyHint: true, openWorldHint: true },
     },
     ({ mandate }) =>
-      run(() => checkMandate(mandate as unknown as Mandate, { ownerResolver: deps.ownerResolver, revocations: (s, k) => deps.register.revocations(s, k), now: now() })),
+      run(() => {
+        const m = mandate as unknown as Mandate;
+        // Nothing is fetched for a mandate whose signature does not hold: made-up mandates cannot make the door
+        // call domains of the caller's choice (the answer still lists the invalid signature).
+        let signed = false;
+        try {
+          signed = verifyMandateSignature(m);
+        } catch {
+          signed = false;
+        }
+        return checkMandate(m, signed ? { ownerResolver: deps.ownerResolver, revocations: (s, k) => deps.register.revocations(s, k), now: now() } : { now: now() });
+      }),
   );
 
   server.registerTool(
@@ -423,6 +434,9 @@ export function securityTxt(origin: string): string {
   ].join("\n");
 }
 
+/** Largest MCP request body accepted by the door. */
+export const DOOR_MAX_BODY_CHARS = 1_000_000;
+
 /**
  * HTTP handler: stateless MCP over streamable HTTP at /mcp (a fresh server per request,
  * plain JSON responses), a JSON description at / and /llms.txt.
@@ -447,6 +461,13 @@ export async function handleDoor(req: Request, deps: DoorDeps): Promise<Response
   if (path === "/mcp") {
     if (req.method === "GET" || req.method === "DELETE")
       return withCors(Response.json({ jsonrpc: "2.0", error: { code: -32000, message: "Method not allowed: this server is stateless, use POST" }, id: null }, { status: 405, headers: { allow: "POST" } }));
+    // One HTTP request, one JSON-RPC message: batches (arrays) would turn one rate-limited request into up to a
+    // hundred tool calls. MCP itself dropped batching in protocol version 2025-06-18.
+    const text = await req.text();
+    const refuse = (status: number, message: string) => withCors(Response.json({ jsonrpc: "2.0", error: { code: -32600, message }, id: null }, { status }));
+    if (text.length > DOOR_MAX_BODY_CHARS) return refuse(413, "request too large");
+    if (/^\s*\[/.test(text)) return refuse(400, "JSON-RPC batches are not accepted here: send one message per request");
+    req = new Request(req.url, { method: req.method, headers: req.headers, body: text });
     const server = buildVisitorServer(deps);
     const transport = new WebStandardStreamableHTTPServerTransport({ sessionIdGenerator: undefined, enableJsonResponse: true });
     await server.connect(transport);

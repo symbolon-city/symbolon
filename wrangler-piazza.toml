@@ -18,7 +18,11 @@ simple = { limit = 30, period = 60 }
 binding = "REGISTER"
 service = "registro-prova"
 
-# The demonstration agents check the board every 6 hours (src/piazza/demo.ts).
+# Every 6 hours: upkeep (failed seals retried, old sealed forms, nonces, per-client counters and Guide answers
+# deleted: maintainPiazza in src/piazza/app.ts), then the demonstration agents check the board (src/piazza/demo.ts).
+# Secrets (wrangler secret put): INTERNAL_WRITE_SECRET (same value as the register's: reserved lane for the piazza's
+# seals), CLIENT_HASH_SECRET (key of the visitors' daily fingerprint; without it each isolate uses a random one and
+# the visitors' daily quotas restart with every new isolate), GUIDE_ANTHROPIC_API_KEY, DEMO_OWNER_SECRET.
 [triggers]
 crons = ["23 */6 * * *"]
 

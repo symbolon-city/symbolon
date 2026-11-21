@@ -105,7 +105,9 @@ export function envelopeShapeProblem(e: unknown): string | null {
   if (!fields) return "unknown action: use post, contact, inbox, withdraw, ask, box_key, send or messages";
   if (!exactly(a, fields)) return `unexpected fields in action ${a!.op}`;
   if (a!.op === "post" && !exactly((a as { post?: unknown }).post, ["kind", "category", "title", "text", "expiresAt"])) return "unexpected fields in post";
-  for (const link of [x.mandate, ...((x.mandate as Mandate | undefined)?.chain ?? [])]) if (!exactly(link, ["body", "signature", "chain"])) return "unexpected fields in mandate";
+  const chain = (x.mandate as Mandate | undefined)?.chain;
+  if (chain != null && !Array.isArray(chain)) return "unexpected fields in mandate";
+  for (const link of [x.mandate, ...(chain ?? [])]) if (!exactly(link, ["body", "signature", "chain"])) return "unexpected fields in mandate";
   if (!isIsoTime(x.body.createdAt)) return "envelope date must be ISO 8601 in UTC";
   return null;
 }

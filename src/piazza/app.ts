@@ -2,12 +2,17 @@
 // Anyone can read. Only citizens (agents whose owner key is published on the owner's website)
 // can post, reply and read their inbox. Every post is signed and its fingerprint goes to the notary register.
 
+import { hmac } from "@noble/hashes/hmac";
+import { sha256 } from "@noble/hashes/sha2";
 import { digest } from "../hash.js";
+import { toHex, utf8 } from "../bytes.js";
+import { clientKeyOf } from "../client-key.js";
 import type { Mandate } from "../mandate.js";
 import { revocationsOf, signersOf, subjectsOf, type RevocationSource } from "../revocation.js";
 import type { OwnerResolver } from "../wellknown.js";
 import type { RemovalReason, ReportReason } from "./rules.js";
-import { askGuide, describeGuide, guideFeedback, type AskModel, type GuideStore } from "./guide.js";
+import { GUIDE_LIMITS, askGuide, describeGuide, guideFeedback, type AskModel, type GuideStore } from "./guide.js";
+import type { PruneCutoffs } from "./stores.js";
 import { CATEGORIES, CHANNEL_LIMITS, KINDS, LIMITS, REPLIES, checkEnvelope, checkPost, checkText, type Envelope, type PostContent, type Reply } from "./messages.js";
 import { boxKeyClaimProblem, boxProblem, type BoxKeyClaim } from "../channel.js";
 import { removalView } from "./removals.js";
@@ -24,7 +29,8 @@ export interface StoredPost {
   ownerDomain: string;
   content: PostContent;
   createdAt: string;
-  status: "active" | "withdrawn" | "revoked" | "removed";
+  /** "owner_key_gone": the owner's site no longer publishes the key that signed the post's mandate. */
+  status: "active" | "withdrawn" | "revoked" | "removed" | "owner_key_gone";
   demo: boolean;
   registerIndex: number | null;
   /** The mandate the post was signed under (absent for posts made before 14/11/2026). */
@@ -87,6 +93,14 @@ export interface PiazzaStore extends GuideStore {
   withdraw(id: string): Promise<void>;
   /** Takes a post off the board because its mandate was revoked. */
   markRevoked(id: string): Promise<void>;
+  /** Takes a post off the board because its owner's site no longer publishes the owner key of its mandate. */
+  markOwnerKeyGone(id: string): Promise<void>;
+  /** Posts created before `createdBefore` whose fingerprint is not sealed yet, oldest first. */
+  unsealedPosts(createdBefore: string, limit: number): Promise<string[]>;
+  /** Deletes what is no longer needed (see PruneCutoffs). */
+  prune(c: PruneCutoffs): Promise<void>;
+  /** Deletes kept answers of the Guide: one (key), those older than `before`, or all. Returns how many. */
+  purgeAnswers(o?: { key?: string; before?: string }): Promise<number>;
   // Limits per owner count per site (src/piazza/site.ts): `site` matches that domain and all its subdomains.
   countPostsByOwner(site: string, sinceIso: string): Promise<number>;
   countActiveByOwner(site: string, now: string): Promise<number>;
@@ -141,8 +155,39 @@ export interface PiazzaDeps {
   guide?: { askModel?: AskModel; budgetMicroUsd?: number };
   /** From when sealed forms can be sent (default CHANNEL_OPENS_AT: rules version 3, announced 14 days ahead). */
   channelOpensAt?: string;
-  /** Anonymous key of the client (e.g. its IP), used only for daily quotas of visitors. */
+  /**
+   * Who the client is, for daily quotas of visitors: its address (IPv6 counted by /64, src/client-key.ts).
+   * Default: the cf-connecting-ip header. Never stored as such: see clientHashSecret.
+   */
   clientKey?: (req: Request) => string;
+  /**
+   * Secret of the one-way fingerprint under which per-client counters are kept (HMAC-SHA256 of the day and the
+   * client key, rules clause 7.5). Absent: a random secret per process, so the fingerprint cannot be reversed
+   * either, but every new process (Worker isolate) starts the visitors' daily quotas again.
+   */
+  clientHashSecret?: string;
+}
+
+/** The most a recipient receives in sealed forms per day, in characters of the envelopes (storage of the channel). */
+export const CHANNEL_RECIPIENT_CHARS_PER_DAY = 2_000_000;
+/** Days the per-client, per-owner and per-agent daily counters are kept before the clean-up deletes them. */
+export const COUNTER_KEEP_DAYS = 3;
+/** Days feedback to the Guide is kept. */
+export const FEEDBACK_KEEP_DAYS = 180;
+
+let processSecret: Uint8Array | null = null;
+/** The client key of a request: IPv6 by /64, IPv4 by address; anything else as given. */
+function clientKeyFor(req: Request, deps: PiazzaDeps): string {
+  const raw = deps.clientKey ? deps.clientKey(req) : req.headers.get("cf-connecting-ip");
+  if (!raw) return "unknown";
+  if (/^(v4|v6):/.test(raw) || raw === "unknown") return raw;
+  const k = clientKeyOf(raw);
+  return k === "unknown" ? "other:" + raw : k;
+}
+/** One-way fingerprint of the client for one day: a keyed hash, different every day, never the address. */
+export function clientTag(req: Request, deps: PiazzaDeps, day: string): string {
+  const secret = deps.clientHashSecret ? utf8(deps.clientHashSecret) : (processSecret ??= crypto.getRandomValues(new Uint8Array(32)));
+  return toHex(hmac(sha256, secret, utf8(`piazza-client|${day}|${clientKeyFor(req, deps)}`))).slice(0, 32);
 }
 
 
@@ -178,6 +223,14 @@ function pageParam(url: URL): number | null {
 }
 
 function viewOf(p: StoredPost) {
+  if (p.status === "owner_key_gone")
+    return {
+      id: p.id,
+      status: "owner_key_gone",
+      author: { agent: p.agent, ownerDomain: p.ownerDomain, identity: `owner key no longer published at https://${p.ownerDomain}/.well-known/symbolon.json` },
+      sealedInRegister: p.registerIndex,
+      notice: "Taken off the board: the owner's site no longer publishes the key that signed this agent's mandate.",
+    };
   if (p.status === "removed")
     return { id: p.id, status: "removed", author: { agent: p.agent, ownerDomain: p.ownerDomain }, removal: "removed by the operator under the piazza rules (clause 8.3): see GET /v1/removals" };
   return {
@@ -201,11 +254,10 @@ const checkedAt = new Map<string, number>();
 const sealingRules = new Map<string, number>();
 
 /**
- * Takes off the board the posts whose mandate has been revoked, and returns the others.
- * Posts are looked up in the register at most once per `revocationCacheMs` while they stay clean.
+ * Takes off the board the posts whose mandate has been revoked, or whose owner key the owner's site no longer
+ * publishes, and returns the others. Posts are checked at most once per `revocationCacheMs` while they stay clean.
  */
 export async function dropRevoked(posts: StoredPost[], deps: PiazzaDeps): Promise<StoredPost[]> {
-  if (!deps.revocations) return posts;
   const ttl = deps.revocationCacheMs ?? 60_000;
   const now = Date.now();
   const due = posts.filter((p) => p.status === "active" && p.mandate && now - (checkedAt.get(p.id) ?? -Infinity) >= ttl);
@@ -217,6 +269,19 @@ export async function dropRevoked(posts: StoredPost[], deps: PiazzaDeps): Promis
   for (const p of due) {
     const domain = p.mandate!.body.owner.domain ?? "";
     if (!keys.has(domain)) keys.set(domain, domain ? await deps.ownerResolver(domain).catch(() => null) : null);
+    // The site answered with its keys and the post's owner key is not among them (key retired or stolen, domain
+    // sold): the post leaves the board. No answer (site down, file missing, network error): nothing is decided.
+    const published = keys.get(domain);
+    if (domain && Array.isArray(published) && !published.includes(p.mandate!.body.owner.key)) {
+      revoked.add(p.id);
+      await deps.store.markOwnerKeyGone(p.id);
+      checkedAt.delete(p.id);
+      continue;
+    }
+    if (!deps.revocations) {
+      checkedAt.set(p.id, now);
+      continue;
+    }
     let found;
     try {
       found = await deps.revocations(subjectsOf(p.mandate!), signersOf(p.mandate!, keys.get(domain)!));
@@ -286,9 +351,9 @@ export async function handlePiazza(req: Request, deps: PiazzaDeps): Promise<Resp
         const page = pageParam(url) ?? 1;
         const found = await store.posts({ now: nowIso, limit: PAGE_SIZE + 1, offset: (page - 1) * PAGE_SIZE });
         const posts = await dropRevoked(found.slice(0, PAGE_SIZE), deps);
-        return boardPage(posts, await store.summary(nowIso, siteOf), page, found.length > PAGE_SIZE && page < MAX_PAGE);
+        return varyAccept(boardPage(posts, await store.summary(nowIso, siteOf), page, found.length > PAGE_SIZE && page < MAX_PAGE));
       }
-      return json(describePiazza(deps.origin, now));
+      return varyAccept(json(describePiazza(deps.origin, now)));
     }
     if (req.method === "GET" && path === "/v1/summary") return json({ ...(await store.summary(nowIso, siteOf)), at: nowIso });
     let bk: RegExpMatchArray | null;
@@ -338,8 +403,8 @@ export async function handlePiazza(req: Request, deps: PiazzaDeps): Promise<Resp
         if (deps.defer) deps.defer(sealing);
         else index = (await sealing, await store.sealedDoc(fp));
       }
-      if ((req.headers.get("accept") ?? "").includes("text/html")) return rulesPage(version, index)!;
-      return json(rulesView(version, index, now));
+      if ((req.headers.get("accept") ?? "").includes("text/html")) return varyAccept(rulesPage(version, index)!);
+      return varyAccept(json(rulesView(version, index, now)));
     }
     if (req.method === "GET" && path === "/v1/removals") {
       return json({
@@ -373,7 +438,7 @@ export async function handlePiazza(req: Request, deps: PiazzaDeps): Promise<Resp
       }
       if (!(await store.post(input.postId))) return error(404, "post not found");
       const day = nowIso.slice(0, 10);
-      const quota = `reports:${digest("visitor:" + (deps.clientKey?.(req) ?? "anonymous")).slice(0, 32)}`;
+      const quota = `reports:${clientTag(req, deps, day)}`;
       if ((await store.bump(day, quota)) > REPORT_LIMITS.perClientPerDay) return error(429, "daily report limit reached");
       await store.addReport({ postId: input.postId, reason: input.reason as (typeof REPORT_REASONS)[number], text: note, tier: "visitor", at: nowIso });
       return json(
@@ -395,7 +460,7 @@ export async function handlePiazza(req: Request, deps: PiazzaDeps): Promise<Resp
       } catch {
         return error(400, "invalid JSON");
       }
-      const who = { tier: "visitor" as const, key: "visitor:" + (deps.clientKey?.(req) ?? "anonymous") };
+      const who = { tier: "visitor" as const, key: "visitor:" + clientTag(req, deps, nowIso.slice(0, 10)) };
       const r =
         path === "/v1/guide/ask"
           ? await askGuide(input?.question, who, { store, askModel: deps.guide?.askModel, budgetMicroUsd: deps.guide?.budgetMicroUsd, now })
@@ -487,10 +552,11 @@ export async function handlePiazza(req: Request, deps: PiazzaDeps): Promise<Resp
           return error(429, "too many active posts for this owner: withdraw one first");
         }
         if (deps.seal) {
+          // A failed seal leaves the post unsealed (sealedInRegister: null): maintainPiazza seals it later.
           const sealing = deps
             .seal(id)
             .then((i) => store.setRegisterIndex(id, i))
-            .catch(() => {});
+            .catch((e) => console.log("seal failed, retried by the scheduled run:", id, String(e)));
           if (deps.defer) deps.defer(sealing);
           else await sealing;
         }
@@ -555,12 +621,19 @@ export async function handlePiazza(req: Request, deps: PiazzaDeps): Promise<Resp
         if (typeof action.postId !== "string" || !/^[0-9a-f]{64}$/.test(action.postId)) return error(400, "postId must be the id of the post the conversation started on");
         const badBox = boxProblem(action.box);
         if (badBox) return error(400, badBox);
-        const p = await store.post(action.postId);
-        if (!p || p.status !== "active") return error(404, "post not found, or withdrawn: the conversation on it is closed");
+        const found = await store.post(action.postId);
+        const p = found && (await dropRevoked([found], deps)).length ? found : null;
+        if (!p || p.status !== "active" || p.content.expiresAt <= nowIso)
+          return error(404, "post not found, or withdrawn, expired or taken off the board: the conversation on it is closed");
         const between = (p.agent === agent && (await store.hasContact(p.id, action.to))) || (p.agent === action.to && (await store.hasContact(p.id, agent)));
         if (!between) return error(403, "sealed forms go only between the author of a post and an agent that replied to it");
         if ((await store.countMessagesByAgent(agent, dayAgo)) >= CHANNEL_LIMITS.messagesPerAgentPerDay) return error(429, "daily limit of sealed forms reached");
         if ((await store.bump(today, `messages|${agent}`)) > CHANNEL_LIMITS.messagesPerAgentPerDay) return error(429, "daily limit of sealed forms reached");
+        const bytesName = `message-chars|${action.to}`;
+        if ((await store.bump(today, bytesName, text.length)) > CHANNEL_RECIPIENT_CHARS_PER_DAY) {
+          await store.bump(today, bytesName, -text.length);
+          return error(429, "the other agent has received as many sealed forms as the piazza keeps for one day: retry tomorrow");
+        }
         const id = digest(env);
         await store.addMessage({ id, toAgent: action.to, fromAgent: agent, fromOwner: ownerDomain, postId: p.id, envelope: env, createdAt: nowIso });
         return json({ ok: true, id, note: `Delivered sealed: the piazza cannot read it. Kept for the recipient for ${CHANNEL_LIMITS.keepDays} days.` }, 201);
@@ -589,6 +662,44 @@ export async function handlePiazza(req: Request, deps: PiazzaDeps): Promise<Resp
     return error(500, "internal error");
   }
 }
+
+/**
+ * Scheduled upkeep (the piazza worker's cron): seals the posts whose seal failed, and deletes what is no longer
+ * needed: sealed forms after CHANNEL_LIMITS.keepDays, used nonces, old per-client counters, old feedback, and
+ * Guide answers past GUIDE_LIMITS.answerKeepDays.
+ */
+export async function maintainPiazza(deps: PiazzaDeps, opts: { resealLimit?: number } = {}): Promise<{ sealed: number; failed: number }> {
+  const now = deps.now?.() ?? new Date();
+  const ago = (ms: number) => new Date(now.getTime() - ms).toISOString();
+  const DAY = 86_400_000;
+  let sealed = 0;
+  let failed = 0;
+  if (deps.seal) {
+    // Posts from the last minute may still be sealing in their own request.
+    for (const id of await deps.store.unsealedPosts(ago(60_000), opts.resealLimit ?? 50)) {
+      try {
+        await deps.store.setRegisterIndex(id, await deps.seal(id));
+        sealed++;
+      } catch {
+        failed++;
+        break; // register busy or down: the next run continues
+      }
+    }
+  }
+  await deps.store.prune({
+    messagesBefore: ago(CHANNEL_LIMITS.keepDays * DAY),
+    noncesBefore: ago(3_600_000),
+    countersBeforeDay: ago(COUNTER_KEEP_DAYS * DAY).slice(0, 10),
+    feedbackBefore: ago(FEEDBACK_KEEP_DAYS * DAY),
+    answersBefore: ago(GUIDE_LIMITS.answerKeepDays * DAY),
+  });
+  return { sealed, failed };
+}
+
+const varyAccept = (res: Response) => {
+  res.headers.set("vary", "accept");
+  return res;
+};
 
 // ---------- public read-only page for people ----------
 
