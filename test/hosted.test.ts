@@ -78,6 +78,14 @@ type App = Awaited<ReturnType<typeof city>>["app"];
 const postJson = (app: App, path: string, body: unknown, headers: Record<string, string> = {}) =>
   app(path, { method: "POST", headers: { "content-type": "application/json", origin: ORIGIN, ...headers }, body: JSON.stringify(body) });
 
+/** Creating a passkey: its registration, then a first signature with it over the server's second challenge. */
+async function signup(app: App, device: Device, ch: { nonce: string; challenge: string }) {
+  const first = await postJson(app, "/auth/signup", { nonce: ch.nonce, ...registration(device, ch.challenge) });
+  if (first.status !== 200) return first;
+  const { confirm } = await first.json();
+  return postJson(app, "/auth/signup/confirm", { nonce: confirm.nonce, signature: device.sign(null, { challenge: fromBase64url(confirm.challenge) }) });
+}
+
 /** The whole "connect your assistant" dance, as an MCP client and the owner's browser do it. */
 async function connect(app: App, device: Device, o: { create: boolean; opensPages?: boolean }) {
   const reg = await (await app("/register", { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ redirect_uris: [REDIRECT], client_name: "Assistente di Marta" }) })).json();
@@ -87,10 +95,10 @@ async function connect(app: App, device: Device, o: { create: boolean; opensPage
   assert.equal(page.status, 200);
   const html = await page.text();
   assert.match(html, /Assistente di Marta/);
-  const request = /"request":"([A-Za-z0-9_-]{43})"/.exec(html)![1]!;
+  const request = /"request":"([A-Za-z0-9_.-]+)"/.exec(html)![1]!;
   const ch = await (await postJson(app, "/auth/challenge", { purpose: "authorize:" + request })).json();
   const answer = o.create
-    ? await postJson(app, "/auth/signup", { nonce: ch.nonce, ...registration(device, ch.challenge) })
+    ? await signup(app, device, ch)
     : await postJson(app, "/auth/signin", { nonce: ch.nonce, credentialId: device.credentialId, signature: device.sign(null, { challenge: fromBase64url(ch.challenge) }) });
   const back = await answer.json();
   assert.equal(answer.status, 200, JSON.stringify(back));
@@ -226,7 +234,7 @@ test("hosted: the connection refuses unknown assistants, foreign return addresse
   // A wrong verifier, or a code taken to another assistant, gets nothing.
   const newCode = async () => {
     const html = await (await app("/authorize?" + new URLSearchParams(base))).text();
-    const request = /"request":"([A-Za-z0-9_-]{43})"/.exec(html)![1]!;
+    const request = /"request":"([A-Za-z0-9_.-]+)"/.exec(html)![1]!;
     const ch = await (await postJson(app, "/auth/challenge", { purpose: "authorize:" + request })).json();
     const back = await (await postJson(app, "/auth/signin", { nonce: ch.nonce, credentialId: device.credentialId, signature: device.sign(null, { challenge: fromBase64url(ch.challenge) }) })).json();
     return new URL(back.redirect).searchParams.get("code")!;

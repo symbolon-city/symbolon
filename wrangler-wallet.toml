@@ -24,7 +24,7 @@ service = "registro-prova"
 binding = "PIAZZA"
 service = "piazza-prova"
 
-# Anti-spam: at most 60 POST requests per minute per client.
+# Anti-spam: at most 60 requests (any method but OPTIONS) per minute per client (IPv6 counted by /64).
 [[ratelimits]]
 name = "WALLET_LIMIT"
 namespace_id = "1004"

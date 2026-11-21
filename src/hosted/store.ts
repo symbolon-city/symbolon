@@ -13,6 +13,8 @@ export interface KeyValue {
   get<T = unknown>(key: string): Promise<T | undefined>;
   put(key: string, value: unknown): Promise<void>;
   delete(key: string): Promise<void>;
+  /** Keys with this prefix in key order, after `startAfter`, at most `limit` (for collecting expired records). */
+  list?(o: { prefix: string; limit: number; startAfter?: string }): Promise<Map<string, unknown>>;
 }
 
 export class MemoryKeyValue implements KeyValue {
@@ -26,6 +28,10 @@ export class MemoryKeyValue implements KeyValue {
   }
   async delete(key: string) {
     this.map.delete(key);
+  }
+  async list(o: { prefix: string; limit: number; startAfter?: string }) {
+    const keys = [...this.map.keys()].filter((k) => k.startsWith(o.prefix) && (o.startAfter === undefined || k > o.startAfter)).sort().slice(0, o.limit);
+    return new Map(keys.map((k) => [k, structuredClone(this.map.get(k))]));
   }
 }
 
@@ -56,11 +62,47 @@ export async function takeExpiring<T>(kv: KeyValue, key: string, now: number): P
   return v;
 }
 
+/**
+ * Deletes the expiring records (putExpiring) of these prefixes whose end has passed: run regularly (a Durable
+ * Object alarm), so that records nobody reads again do not stay forever. Looks at most `budget` keys per call
+ * and says where to continue. Without kv.list it does nothing.
+ */
+export async function sweepExpired(
+  kv: KeyValue,
+  now: number,
+  prefixes: readonly string[],
+  o: { budget?: number; from?: { prefix: string; after?: string } } = {},
+): Promise<{ deleted: number; next?: { prefix: string; after?: string } }> {
+  if (!kv.list) return { deleted: 0 };
+  let budget = o.budget ?? 2000;
+  let deleted = 0;
+  const start = o.from ? Math.max(0, prefixes.indexOf(o.from.prefix)) : 0;
+  let after = o.from?.after;
+  for (let i = start; i < prefixes.length; i++, after = undefined) {
+    const prefix = prefixes[i]!;
+    for (;;) {
+      if (budget <= 0) return { deleted, next: { prefix, ...(after !== undefined ? { after } : {}) } };
+      const page = await kv.list({ prefix, limit: Math.min(budget, 200), ...(after !== undefined ? { startAfter: after } : {}) });
+      if (!page.size) break;
+      for (const [k, v] of page) {
+        budget--;
+        after = k;
+        const exp = (v as Partial<Expiring<unknown>> | null)?.exp;
+        if (typeof exp === "number" && !(exp > now)) {
+          await kv.delete(k);
+          deleted++;
+        }
+      }
+    }
+  }
+  return { deleted };
+}
+
 /** AES-GCM key for one owner's wallet, derived from the operator's secret (HKDF-SHA256, the owner id as info). */
-async function walletKey(secret: Uint8Array, ownerId: string): Promise<CryptoKey> {
+async function walletKey(secret: Uint8Array, ownerId: string, salt = "symbolon-hosted-wallet/1"): Promise<CryptoKey> {
   const base = await crypto.subtle.importKey("raw", secret as BufferSource, "HKDF", false, ["deriveKey"]);
   return crypto.subtle.deriveKey(
-    { name: "HKDF", hash: "SHA-256", salt: utf8("symbolon-hosted-wallet/1") as BufferSource, info: utf8(ownerId) as BufferSource },
+    { name: "HKDF", hash: "SHA-256", salt: utf8(salt) as BufferSource, info: utf8(ownerId) as BufferSource },
     base,
     { name: "AES-GCM", length: 256 },
     false,
@@ -99,6 +141,28 @@ export class HostedWalletStorage implements WalletStorage {
     );
     await this.kv.put(this.key, { iv: toBase64url(iv), ct: toBase64url(new Uint8Array(ct)) });
   }
+}
+
+/** A small record kept encrypted under the operator's secret, bound to its storage key (like the wallets). */
+export async function getSealed<T>(kv: KeyValue, secret: Uint8Array, key: string): Promise<T | undefined> {
+  const box = await kv.get<{ iv: string; ct: string }>(key);
+  if (!box) return undefined;
+  const plain = await crypto.subtle.decrypt(
+    { name: "AES-GCM", iv: fromBase64url(box.iv) as BufferSource, additionalData: utf8(key) as BufferSource },
+    await walletKey(secret, key, "symbolon-hosted-record/1"),
+    fromBase64url(box.ct) as BufferSource,
+  );
+  return JSON.parse(new TextDecoder().decode(plain)) as T;
+}
+
+export async function putSealed(kv: KeyValue, secret: Uint8Array, key: string, value: unknown): Promise<void> {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const ct = await crypto.subtle.encrypt(
+    { name: "AES-GCM", iv: iv as BufferSource, additionalData: utf8(key) as BufferSource },
+    await walletKey(secret, key, "symbolon-hosted-record/1"),
+    utf8(JSON.stringify(value)) as BufferSource,
+  );
+  await kv.put(key, { iv: toBase64url(iv), ct: toBase64url(new Uint8Array(ct)) });
 }
 
 /** Runs one task at a time per key (one owner's wallet), within this process or Durable Object. */

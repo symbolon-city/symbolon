@@ -10,7 +10,8 @@ import { HttpRegisterClient } from "../src/agent/client.js";
 import { esploraProvider } from "../src/anchor.js";
 import { fromBase64url } from "../src/bytes.js";
 import { httpOwnerResolver, type OwnerResolver } from "../src/wellknown.js";
-import { handleHosted } from "../src/hosted/app.js";
+import { clientKeyOfRequest } from "../src/client-key.js";
+import { handleHosted, sweepHosted } from "../src/hosted/app.js";
 import type { KeyValue } from "../src/hosted/store.js";
 
 interface Service {
@@ -20,6 +21,9 @@ interface DurableStorage {
   get<T>(key: string): Promise<T | undefined>;
   put(key: string, value: unknown): Promise<void>;
   delete(key: string): Promise<boolean>;
+  list(o: { prefix: string; limit: number; startAfter?: string }): Promise<Map<string, unknown>>;
+  getAlarm(): Promise<number | null>;
+  setAlarm(at: number): Promise<void>;
 }
 interface DurableNamespace {
   idFromName(name: string): unknown;
@@ -49,8 +53,8 @@ function via(service: Service, client: string): typeof fetch {
 
 export default {
   async fetch(req: Request, env: Env): Promise<Response> {
-    const client = req.headers.get("cf-connecting-ip") ?? "unknown";
-    if (req.method === "POST" && env.WALLET_LIMIT && !(await env.WALLET_LIMIT.limit({ key: client })).success)
+    // Every request counts (GET too: the pages and the connection requests), per client (IPv6 by /64).
+    if (req.method !== "OPTIONS" && env.WALLET_LIMIT && !(await env.WALLET_LIMIT.limit({ key: clientKeyOfRequest(req) })).success)
       return Response.json({ error: "too many requests, retry in a minute" }, { status: 429 });
     return env.WALLET.get(env.WALLET.idFromName("wallet")).fetch(req);
   },
@@ -58,18 +62,37 @@ export default {
 
 const ownerCache = new Map<string, { keys: string[] | null; at: number }>();
 
+const SWEEP_EVERY = 60 * 60_000;
+const SWEEP_CURSOR = "sweep-cursor";
+
 export class WalletHome {
   private readonly kv: KeyValue;
+  private readonly storage: DurableStorage;
+  private alarmChecked = false;
   constructor(
     state: { storage: DurableStorage },
     private readonly env: Env,
   ) {
     const s = state.storage;
-    this.kv = { get: (k) => s.get(k), put: (k, v) => s.put(k, v), delete: async (k) => void (await s.delete(k)) };
+    this.storage = s;
+    this.kv = { get: (k) => s.get(k), put: (k, v) => s.put(k, v), delete: async (k) => void (await s.delete(k)), list: (o) => s.list(o) };
+  }
+
+  /** Collects expired records (challenges, codes, tokens, links, unused assistants...) a slice at a time, every hour. */
+  async alarm(): Promise<void> {
+    const from = await this.storage.get<{ prefix: string; after?: string }>(SWEEP_CURSOR);
+    const r = await sweepHosted(this.kv, Date.now(), { budget: 5000, ...(from ? { from } : {}) });
+    if (r.next) await this.storage.put(SWEEP_CURSOR, r.next);
+    else if (from) await this.storage.delete(SWEEP_CURSOR);
+    await this.storage.setAlarm(Date.now() + (r.next ? 60_000 : SWEEP_EVERY));
   }
 
   async fetch(req: Request): Promise<Response> {
     const env = this.env;
+    if (!this.alarmChecked) {
+      this.alarmChecked = true;
+      if ((await this.storage.getAlarm()) === null) await this.storage.setAlarm(Date.now() + SWEEP_EVERY);
+    }
     const client = req.headers.get("cf-connecting-ip") ?? "unknown";
     const registerUrl = env.REGISTER_URL.replace(/\/+$/, "");
     const http = httpOwnerResolver();

@@ -65,6 +65,8 @@ async function main() {
     const q = new URLSearchParams({ response_type: "code", client_id: reg.client_id, redirect_uri: redirect, code_challenge: toBase64url(sha256(utf8(verifier))), code_challenge_method: "S256", state: "s1" });
     await page.goto(origin + "/authorize?" + q);
     await page.getByRole("button", { name: /First time/ }).click();
+    // The new passkey then proves itself with a first signature (a second tap).
+    await page.getByRole("button", { name: /Confirm the new passkey/ }).click();
     await page.waitForURL(/assistant-callback\?code=/);
     const code = new URL(page.url()).searchParams.get("code")!;
     const tok = await (await app("/token", { method: "POST", headers: { "content-type": "application/x-www-form-urlencoded" }, body: new URLSearchParams({ grant_type: "authorization_code", code, code_verifier: verifier, client_id: reg.client_id, redirect_uri: redirect }).toString() })).json();
