@@ -10,11 +10,22 @@ database_id = "d469249f-68b5-4099-be8e-503848e0b17d"
 [triggers]
 crons = ["17 3 * * *", "41 * * * *"]
 
-# Anti-spam: at most 20 writes per minute per client (free Workers rate limiting).
+# Anti-spam: at most 20 writes per minute per client (an IPv4 address or an IPv6 /64; free Workers rate limiting).
 [[ratelimits]]
 name = "WRITE_LIMIT"
 namespace_id = "1001"
 simple = { limit = 20, period = 60 }
 
+# The internal lane (the city's own services, e.g. the piazza sealing posts): requests carrying
+# x-symbolon-internal = INTERNAL_WRITE_SECRET (set with `wrangler secret put INTERNAL_WRITE_SECRET`, the same
+# value in the piazza worker) share this higher limit and may use the reserved part of the daily cap.
+[[ratelimits]]
+name = "INTERNAL_WRITE_LIMIT"
+namespace_id = "1002"
+simple = { limit = 300, period = 60 }
+
 [vars]
 DAILY_WRITE_CAP = "5000"
+# Of which only the internal lane can use the last 1000; each public client at most 100 a day (src/server/gate.ts).
+DAILY_INTERNAL_RESERVE = "1000"
+DAILY_CLIENT_WRITE_CAP = "100"

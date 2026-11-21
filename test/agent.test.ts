@@ -81,7 +81,7 @@ test("two agents agree through MCP, and a third party verifies the proof", async
   assert.deepEqual(report.checks.filter((c: { ok: boolean }) => !c.ok), []);
   assert.equal(report.verdict, "incomplete");
   assert.deepEqual(report.disclosed, { delivery: "2026-12-10" });
-  const full = await buyer.call("symbolon_create_proof", { entry: accepted.entry, reveal: ["delivery", "amount"] });
+  const full = await buyer.call("symbolon_create_proof", { entry: accepted.entry, reveal: ["delivery", "amount", "object"] });
   const fullReport = await seller.call("symbolon_verify_proof", { proof: full });
   assert.equal(fullReport.valid, true, JSON.stringify([fullReport.gaps, fullReport.checks.filter((c: { ok: boolean }) => !c.ok)]));
 });

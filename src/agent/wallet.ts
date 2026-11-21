@@ -6,7 +6,7 @@ import type { BlockProvider } from "../anchor.js";
 import { canonical, type Json } from "../canonical.js";
 import { clauseNamesProblem, clausesObject, commitClauses, disclose, verifyOpened, type OpenedClauses } from "../clauses.js";
 import { generateKeyPair, keyPairFromSecret, passkeyChallenge, verifyValue, type KeyPair, type PublicKey } from "../keys.js";
-import { toBase64url, toHex } from "../bytes.js";
+import { randomBytes, toBase64url, toHex } from "../bytes.js";
 import { digest } from "../hash.js";
 import {
   APPROVAL_MAX_DAYS,
@@ -25,7 +25,7 @@ import {
   type Mandate,
   type MandateBody,
 } from "../mandate.js";
-import { buildProof, verifyProof, type ProofBundle, type Report } from "../proof.js";
+import { amountShapeProblem, buildProof, verifyProof, type ProofBundle, type Report } from "../proof.js";
 import { createRecord, entryHash, isFullySigned, recordProblem, signRecord, type SignedRecord } from "../record.js";
 import type { Receipt } from "../register.js";
 import type { OwnerResolver } from "../wellknown.js";
@@ -96,7 +96,12 @@ export interface PendingApproval {
   allowUnverifiedOwner?: boolean;
   /** The owner's signature of body, when the owner signed it on a page of the wallet (hosted wallet). */
   signature?: string;
+  /** Identity level of the counterparty's owner when the approval was asked (shown to the owner). */
+  ownerLevel?: CounterpartyCheck["level"];
 }
+
+/** At most this many agreements wait for the owner's approval at once (expired ones are dropped first). */
+export const MAX_PENDING_APPROVALS = 20;
 
 /** True if this mandate is the owner's approval of one agreement only. */
 const isApproval = (m: Mandate | undefined) => !!m && m.body?.type === "accord/mandate" && !!m.body.agreement;
@@ -536,19 +541,21 @@ export class Wallet {
     const problem = clauseNamesProblem(Object.keys(p.clauses));
     if (problem) throw new Error(problem);
     const amount = (Object.prototype.hasOwnProperty.call(p.clauses, "amount") ? p.clauses["amount"] : undefined) as unknown as Amount | undefined;
-    if (!amount || typeof amount !== "object" || typeof amount.value !== "string" || typeof amount.currency !== "string")
-      throw new Error("an approval is for an amount: the agreement needs an 'amount' clause {value: '123.45', currency: 'EUR'}");
+    if (amount === undefined) throw new Error("an approval is for an amount: the agreement needs an 'amount' clause {value: '123.45', currency: 'EUR'}");
+    if (amountShapeProblem(amount))
+      throw new Error("the 'amount' clause must be exactly {value: '123.45', currency: 'EUR'}: a decimal string and three capital letters, nothing else");
     const limit = spendingLimit(mine);
-    let within = false;
-    try {
-      within = !limit || (limit.currency === amount.currency && amountLeq(amount.value, limit.value));
-    } catch {
-      throw new Error(`invalid amount ${amount.value}`);
-    }
+    const within = !limit || (limit.currency === amount.currency && amountLeq(amount.value, limit.value));
     if (within) throw new Error("this agreement is within your mandate: propose it directly with symbolon_propose_agreement");
     this.checkAmount(p.clauses, p.counterparty);
     const hours = p.hours ?? 48;
     if (!Number.isFinite(hours) || hours <= 0 || hours > APPROVAL_MAX_DAYS * 24) throw new Error(`an approval lasts from a few minutes to ${APPROVAL_MAX_DAYS * 24} hours`);
+    // Expired requests are dropped, and only a few may wait at once: the state must not grow without end.
+    const pendingNow = (this.state.approvals ??= {});
+    const nowIso = this.now().toISOString();
+    for (const [root, a] of Object.entries(pendingNow)) if (!withinValidity({ body: a.body, signature: "" }, nowIso)) delete pendingNow[root];
+    if (Object.keys(pendingNow).length >= MAX_PENDING_APPROVALS)
+      throw new Error(`${MAX_PENDING_APPROVALS} agreements are already waiting for your owner's approval: wait for them to be approved or to expire`);
     const opened = commitClauses(Object.entries(p.clauses).map(([name, value]) => ({ name, value })));
     const from = this.now().getTime() - 60_000;
     const owner = mine.body.owner;
@@ -560,10 +567,17 @@ export class Wallet {
       notBefore: new Date(from).toISOString(),
       notAfter: new Date(from + hours * 3_600_000).toISOString(),
       charter: mine.body.charter,
-      agreement: { clausesRoot: opened.root, with: [p.counterparty.body.agent], under: mandateId(mine) },
+      // Bound to one record (the nonce it will carry), and to the counterparty under exactly this mandate.
+      agreement: {
+        clausesRoot: opened.root,
+        with: [p.counterparty.body.agent],
+        withMandates: [mandateId(p.counterparty)],
+        nonce: toHex(randomBytes(16)),
+        under: mandateId(mine),
+      },
     });
     this.checkAmount(p.clauses, { body, signature: "" });
-    (this.state.approvals ??= {})[opened.root] = { opened, counterparty: p.counterparty, body, ...(p.allowUnverifiedOwner ? { allowUnverifiedOwner: true } : {}) };
+    pendingNow[opened.root] = { opened, counterparty: p.counterparty, body, ownerLevel: check.level, ...(p.allowUnverifiedOwner ? { allowUnverifiedOwner: true } : {}) };
     await this.persist();
     const general = limit ? `${limit.value} ${limit.currency}` : "none";
     return {
@@ -603,6 +617,8 @@ export class Wallet {
         approval_body: a.body,
         clauses: clausesObject(a.opened),
         counterparty: { agent: a.counterparty.body.agent, owner: ownerName(a.counterparty.body.owner), scope: a.counterparty.body.scope },
+        /** "domain": the counterparty's owner key is published at its domain; "key": an owner known only by its key; "unverified": neither. */
+        ownerLevel: a.ownerLevel ?? (a.counterparty.body.owner.domain === undefined ? "key" : "unverified"),
         general_limit: this.state.mandate ? (spendingLimit(this.state.mandate) ?? null) : null,
         signed: !!a.signature,
       };
@@ -616,6 +632,7 @@ export class Wallet {
   async recordOwnerApproval(root: string, signature: string) {
     const pending = this.state.approvals?.[root];
     if (!pending) throw new Error("no approval request of mine matches");
+    if (!withinValidity({ body: pending.body, signature: "" }, this.now().toISOString())) throw new Error("this approval request has expired: ask again");
     const approval: Mandate = { body: pending.body, signature };
     const shape = mandateProblem(approval);
     if (shape) throw new Error(`the approval is malformed: ${shape}`);
@@ -646,23 +663,25 @@ export class Wallet {
     const clauses = clausesObject(pending.opened);
     this.checkAmount(clauses, approval);
     this.checkAmount(clauses, pending.counterparty);
-    const record = signRecord(
-      createRecord({
-        type: "accord/agreement",
-        clausesRoot: pending.opened.root,
-        clauseCount: pending.opened.count,
-        parties: [
-          { agent: this.key.publicKey, mandate: mandateId(approval) },
-          { agent: pending.counterparty.body.agent, mandate: mandateId(pending.counterparty) },
-        ],
-        charter: this.charter,
-        createdAt: this.now().toISOString(),
-      }),
-      this.key,
-    );
-    const bad = approvalProblem(approval, record.body);
+    const nonce = pending.body.agreement!.nonce;
+    if (!nonce) throw new Error("this approval request is of an older format, not bound to one agreement: ask the owner again");
+    const unsigned = createRecord({
+      type: "accord/agreement",
+      clausesRoot: pending.opened.root,
+      clauseCount: pending.opened.count,
+      parties: [
+        { agent: this.key.publicKey, mandate: mandateId(approval) },
+        { agent: pending.counterparty.body.agent, mandate: mandateId(pending.counterparty) },
+      ],
+      charter: this.charter,
+      createdAt: this.now().toISOString(),
+    });
+    // The record carries exactly the nonce the owner approved: that makes the approval good for this record only.
+    const record = signRecord({ ...unsigned, body: { ...unsigned.body, nonce } }, this.key);
+    // The general mandate travels with the offer: a proof must show it, valid, for the approval to count.
+    const mandates = [approval, pending.counterparty, mine];
+    const bad = approvalProblem(approval, record.body, { mandates, at: this.now().toISOString() });
     if (bad) throw new Error(bad);
-    const mandates = [approval, pending.counterparty];
     this.state.offers[root] = { kind: "agreement", record, opened: pending.opened, mandates };
     delete this.state.approvals![root];
     await this.persist();

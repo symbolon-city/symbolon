@@ -181,7 +181,8 @@ test("approval: the format binds it to one agreement, for a few days, and it can
   const other = generateKeyPair();
   const now = Date.now();
   const base = { ownerDomain: "alfa.example", agent: agent.publicKey, scope: "one agreement", maxAmount: { value: "2400.00", currency: "EUR" }, charter: "accord-charter/0.1", notBefore: iso(now), notAfter: iso(now + 2 * DAY) };
-  const agreement = { clausesRoot: "ab".repeat(32), with: [other.publicKey], under: "cd".repeat(32) };
+  // Since 21/11/2026 also bound to the other party's mandate and to one record (its nonce).
+  const agreement = { clausesRoot: "ab".repeat(32), with: [other.publicKey], withMandates: ["ee".repeat(32)], nonce: "01".repeat(16), under: "cd".repeat(32) };
   const ok = createMandate(owner, { ...base, agreement });
   assert.equal(mandateProblem(ok), null);
   for (const bad of [
@@ -190,19 +191,27 @@ test("approval: the format binds it to one agreement, for a few days, and it can
     { ...agreement, with: [other.publicKey, other.publicKey] },
     { ...agreement, clausesRoot: "x" },
     { ...agreement, extra: 1 },
+    { ...agreement, withMandates: [] },
+    { ...agreement, nonce: "zz" },
   ])
     assert.throws(() => createMandate(owner, { ...base, agreement: bad as typeof agreement }));
   assert.throws(() => createMandate(owner, { ...base, notAfter: iso(now + 8 * DAY), agreement }), /at most 7 days/);
   // Not passed on to another agent.
   assert.throws(() => createSubMandate(agent, ok, { agent: generateKeyPair().publicKey, scope: "x", notBefore: base.notBefore, notAfter: base.notAfter }), /cannot be passed on/);
-  // Bound to its clauses and its parties.
-  assert.equal(approvalProblem(ok, { clausesRoot: agreement.clausesRoot, parties: [{ agent: agent.publicKey }, { agent: other.publicKey }] }), null);
-  assert.match(String(approvalProblem(ok, { clausesRoot: "ef".repeat(32), parties: [{ agent: agent.publicKey }, { agent: other.publicKey }] })), /other clauses/);
-  assert.match(String(approvalProblem(ok, { clausesRoot: agreement.clausesRoot, parties: [{ agent: agent.publicKey }, { agent: generateKeyPair().publicKey }] })), /other parties/);
+  // Bound to its clauses, its record and its parties.
+  const nonce = agreement.nonce;
+  const me = { agent: agent.publicKey, mandate: mandateId(ok) };
+  const them = { agent: other.publicKey, mandate: agreement.withMandates[0] };
+  assert.equal(approvalProblem(ok, { clausesRoot: agreement.clausesRoot, nonce, parties: [me, them] }), null);
+  assert.match(String(approvalProblem(ok, { clausesRoot: "ef".repeat(32), nonce, parties: [me, them] })), /other clauses/);
+  assert.match(String(approvalProblem(ok, { clausesRoot: agreement.clausesRoot, nonce, parties: [me, { ...them, agent: generateKeyPair().publicKey }] })), /other parties/);
   assert.match(
-    String(approvalProblem(ok, { clausesRoot: agreement.clausesRoot, parties: [{ agent: agent.publicKey }, { agent: other.publicKey }, { agent: generateKeyPair().publicKey }] })),
+    String(approvalProblem(ok, { clausesRoot: agreement.clausesRoot, nonce, parties: [me, them, { agent: generateKeyPair().publicKey, mandate: "ee".repeat(32) }] })),
     /other parties/,
   );
+  // The approval written before 21/11/2026 (no nonce, no withMandates) allows nothing.
+  const old = createMandate(owner, { ...base, agreement: { clausesRoot: agreement.clausesRoot, with: [other.publicKey], under: agreement.under } });
+  assert.match(String(approvalProblem(old, { clausesRoot: agreement.clausesRoot, nonce, parties: [me, them] })), /older format/);
 });
 
 test("approval: a proof that uses an approval for another agreement is invalid", async () => {

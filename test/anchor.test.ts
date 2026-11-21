@@ -107,7 +107,7 @@ test("a proof can carry a Bitcoin anchor of a later tree head", async () => {
   const { ts, blocks } = confirmed(headDigest(later), 900_002);
   const anchor = { anchor: { head: later, ots: toBase64(toOtsFile(ts)) }, consistency: await s.register.consistency(s.receipt.head.size, later.size) };
 
-  const amount = [disclose(s.opened, "amount")];
+  const amount = s.opened.clauses.map((c) => disclose(s.opened, c.name)); // every clause: the buyer's mandate has a limit
   const ok = await verifyProof({ ...s.proof(amount), anchor }, { ...s.verifyOpts, bitcoin: blocks });
   assert.ok(ok.valid, JSON.stringify(ok.checks.filter((c) => !c.ok)));
   assert.equal(ok.bitcoin.status, "confirmed");

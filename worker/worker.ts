@@ -1,23 +1,22 @@
 // Cloudflare Worker entry point for the register.
 // Bindings: DB (D1 database), REGISTER_SECRET_KEY (secret, 32-byte hex),
-// WRITE_LIMIT (Cloudflare rate limiter, per client), DAILY_WRITE_CAP (optional, default 5000: plain entries
-// and cosignatures), DAILY_REVOCATION_CAP (optional, default 20000: revocations have their own cap).
-// Cron: anchors the latest head in Bitcoin once a day and upgrades pending anchors hourly.
+// WRITE_LIMIT (Cloudflare rate limiter, per client: IPv4 address or IPv6 /64), INTERNAL_WRITE_LIMIT (rate
+// limiter of the internal lane), INTERNAL_WRITE_SECRET (secret shared with the piazza, sent in the
+// x-symbolon-internal header), DAILY_WRITE_CAP (default 5000: plain entries and cosignatures) and the other
+// daily limits of src/server/gate.ts (GateEnv), all optional.
+// Cron: anchors the latest head in Bitcoin once a day, upgrades pending anchors and prunes old daily counters hourly.
 
 import { keyPairFromSecret } from "../src/keys.js";
 import { Register } from "../src/register.js";
 import { anchorLatest, handle, upgradePending, type AppDeps } from "../src/server/app.js";
-import { writeGate } from "../src/server/gate.js";
-import { D1Store, SCHEMA, type D1Like } from "../src/server/stores.js";
+import { writeGate, type GateEnv } from "../src/server/gate.js";
+import { D1Store, SCHEMA, pruneDailyWrites, type D1Like } from "../src/server/stores.js";
 import { D1Stats } from "../src/server/stats.js";
 
-interface Env {
+interface Env extends GateEnv {
   DB: D1Like & { exec(sql: string): Promise<unknown> };
   REGISTER_SECRET_KEY: string;
   BASE_URL?: string;
-  WRITE_LIMIT?: { limit(o: { key: string }): Promise<{ success: boolean }> };
-  DAILY_WRITE_CAP?: string;
-  DAILY_REVOCATION_CAP?: string;
 }
 
 let schemaReady = false;
@@ -43,6 +42,11 @@ export default {
       } catch (e) {
         console.error("anchor failed, will retry tomorrow:", e);
       }
+    }
+    try {
+      await pruneDailyWrites(env.DB);
+    } catch (e) {
+      console.error("pruning daily counters failed:", e);
     }
     await upgradePending(d);
   },
