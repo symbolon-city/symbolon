@@ -7,7 +7,7 @@
 
 import { createServer } from "node:http";
 import { existsSync, readFileSync, writeFileSync } from "node:fs";
-import { handleArchive, type ArchiveStore, type Snapshot } from "../src/archive.js";
+import { SNAPSHOT_MAX_BYTES, handleArchive, type ArchiveStore, type Snapshot } from "../src/archive.js";
 
 const args = process.argv.slice(2);
 const opt = (name: string, dflt: string) => (args.includes(`--${name}`) ? args[args.indexOf(`--${name}`) + 1] : dflt);
@@ -30,8 +30,19 @@ class FileArchiveStore implements ArchiveStore {
 const store = new FileArchiveStore();
 
 createServer(async (req, res) => {
+  // The body is read only up to the largest snapshot: a bigger one is refused without being kept in memory.
   const chunks: Buffer[] = [];
-  for await (const c of req) chunks.push(c as Buffer);
+  let size = 0;
+  for await (const c of req) {
+    size += (c as Buffer).length;
+    if (size > SNAPSHOT_MAX_BYTES) {
+      res.writeHead(413, { "content-type": "application/json", connection: "close" });
+      res.end(JSON.stringify({ error: "snapshot too large" }) + "\n");
+      req.destroy();
+      return;
+    }
+    chunks.push(c as Buffer);
+  }
   const r = await handleArchive(
     new Request(`http://localhost${req.url}`, { method: req.method, headers: { "content-type": "application/json" }, ...(req.method === "PUT" ? { body: Buffer.concat(chunks) } : {}) }),
     { store, ownerKey },

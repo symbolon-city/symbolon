@@ -82,6 +82,46 @@ export interface WalletState {
   approvals?: Record<string, PendingApproval>;
   /** Sealed forms already opened (fingerprint of the signed envelope body -> first opened), kept SEEN_FORMS_DAYS. */
   seenForms?: Record<string, string>;
+  /** Ids of mandates replaced by a later one: never installed again (an older, wider mandate cannot come back). */
+  supersededMandates?: string[];
+}
+
+/** Longest value of one clause, and of all clauses of an agreement together (characters of canonical JSON). */
+export const CLAUSE_MAX_CHARS = 8_192;
+export const CLAUSES_MAX_CHARS = 32_768;
+/** How many replaced mandate ids a wallet remembers. */
+const SUPERSEDED_MAX = 500;
+
+const AMOUNT_VALUE = /^\d{1,18}(?:\.\d{1,6})?$/;
+const CURRENCY = /^[A-Z]{3}$/;
+
+/** Problem with an "amount" clause, or null: exactly {value, currency}, a decimal string and a 3-letter code, nothing else. */
+function amountClauseProblem(a: unknown): string | null {
+  const shape = "the amount clause must be exactly {value: '123.45', currency: 'EUR'}";
+  if (!a || typeof a !== "object" || Array.isArray(a)) return shape;
+  const keys = Object.keys(a);
+  if (keys.length !== 2 || !keys.includes("value") || !keys.includes("currency")) return `${shape}, with no other fields`;
+  const x = a as { value: unknown; currency: unknown };
+  if (typeof x.value !== "string" || !AMOUNT_VALUE.test(x.value)) return `${shape}: the value must be a decimal string with at most 6 decimals`;
+  if (typeof x.currency !== "string" || !CURRENCY.test(x.currency)) return `${shape}: the currency must be a 3-letter code`;
+  return null;
+}
+
+/** Problem with the size of an agreement's clauses, or null (keeps wallets, snapshots and proofs of a sane size). */
+export function clausesSizeProblem(clauses: Record<string, Json>): string | null {
+  let total = 0;
+  for (const [name, value] of Object.entries(clauses)) {
+    const n = canonical(value).length;
+    if (n > CLAUSE_MAX_CHARS) return `clause "${name}" is too long (at most ${CLAUSE_MAX_CHARS} characters per clause)`;
+    total += n + name.length;
+  }
+  return total > CLAUSES_MAX_CHARS ? `the clauses are too long (at most ${CLAUSES_MAX_CHARS} characters in all)` : null;
+}
+
+/** One line of text from outside (an archive server, a register), safe to keep and show: no control characters, capped. */
+export function outsideText(s: unknown, max = 200): string {
+  const t = String(s ?? "").replace(/[\u0000-\u001f\u007f-\u009f\u200b-\u200f\u2028-\u202e\u2066-\u2069\ufeff]+/g, " ").replace(/\s+/g, " ").trim();
+  return JSON.stringify(t.length > max ? t.slice(0, max) + "…" : t);
 }
 
 /** How long forms are remembered, and the oldest form acted on (the piazza keeps forms 30 days). */
@@ -133,6 +173,15 @@ export interface Confirmation {
 
 export type { CounterpartyCheck } from "../counterparty.js";
 
+/** What accept() returns. alreadySealed: the same offer was accepted before; nothing new was sealed or stored. */
+export interface Accepted {
+  entry: string;
+  confirmation: Confirmation;
+  counterparty: CounterpartyCheck;
+  counterparties: CounterpartyCheck[];
+  alreadySealed?: true;
+}
+
 export interface WalletOptions {
   ownerResolver?: OwnerResolver;
   bitcoin?: BlockProvider;
@@ -179,6 +228,18 @@ export class Wallet {
     await this.storage.save(this.state);
   }
 
+  private lockTail: Promise<unknown> = Promise.resolve();
+  /**
+   * Runs fn alone among this wallet's changes (accept, propose, seal, close, withdraw, install a mandate):
+   * a check and the change it allows cannot be split by another call, e.g. two accepts both passing a total.
+   * Not reentrant: never call it from inside fn. Other code that changes the wallet (proposeApproved) uses it too.
+   */
+  withLock<T>(fn: () => Promise<T> | T): Promise<T> {
+    const run = this.lockTail.then(() => fn(), () => fn());
+    this.lockTail = run.catch(() => undefined);
+    return run;
+  }
+
   /**
    * Sends the owner's archive a sealed snapshot of this agent's commitments (see WalletOptions.archive).
    * Best effort: the outcome is kept and shown, the agent's work goes on either way.
@@ -195,9 +256,13 @@ export class Wallet {
       const { as_of: _ignored, ...commitments } = this.commitments();
       const snap = await makeSnapshot(this.key, m, a.claim, seq, commitments as unknown as Json, this.now());
       const res = await (a.fetchImpl ?? fetch)(a.url.replace(/\/+$/, "") + "/v1/snapshots", { method: "PUT", headers: { "content-type": "application/json" }, body: JSON.stringify(snap), signal: AbortSignal.timeout(10_000) });
-      if (!res.ok) throw new Error(`archive: HTTP ${res.status} ${((await res.json().catch(() => ({}))) as { error?: string }).error ?? ""}`.trim());
+      if (!res.ok) {
+        // The archive server's words are kept and shown to the agent: one quoted, capped line only.
+        const said = ((await res.json().catch(() => ({}))) as { error?: unknown }).error;
+        throw new Error(`archive: HTTP ${res.status}${said === undefined ? "" : ` ${outsideText(said)}`}`);
+      }
     } catch (e) {
-      error = (e as Error).message;
+      error = String((e as Error).message ?? e).slice(0, 400);
     }
     // The number always moves on, so a save that arrived but whose answer was lost does not block the next ones.
     const savedAt = error ? this.state.archive?.savedAt : this.now().toISOString();
@@ -306,13 +371,27 @@ export class Wallet {
     };
   }
 
-  async installMandate(m: Mandate): Promise<CounterpartyCheck> {
-    if (m.body.agent !== this.key.publicKey) throw new Error("this mandate is for a different agent key");
+  installMandate(m: Mandate): Promise<CounterpartyCheck> {
+    return this.withLock(() => this.installMandateNow(m));
+  }
+
+  private async installMandateNow(m: Mandate): Promise<CounterpartyCheck> {
+    if (m?.body?.agent !== this.key.publicKey) throw new Error("this mandate is for a different agent key");
     if (isApproval(m)) throw new Error("this is your owner's approval of one agreement, not a mandate: use it with symbolon_propose_approved_agreement");
     if (!verifyMandateSignature(m)) throw new Error("mandate signature is invalid");
     if (!withinValidity(m, this.now().toISOString())) throw new Error("mandate is not valid now");
     const check = await this.checkCounterparty(m);
     if (check.revoked) throw new Error(`this mandate was revoked on ${check.revoked.at}`);
+    // A mandate replaced by a later one never comes back (e.g. an older, wider one kept by someone): the owner's last word stands.
+    const id = mandateId(m);
+    const superseded = this.state.supersededMandates ?? [];
+    if (superseded.includes(id)) throw new Error("this mandate was replaced by a later one from the owner: it cannot be installed again");
+    const cur = this.state.mandate;
+    if (cur && mandateId(cur) !== id) {
+      if (cur.body.owner.key === m.body.owner.key && Date.parse(m.body.notBefore) < Date.parse(cur.body.notBefore))
+        throw new Error("this mandate is older than the one installed (it starts earlier): only a newer mandate from the owner can replace it");
+      this.state.supersededMandates = [...superseded, mandateId(cur)].slice(-SUPERSEDED_MAX);
+    }
     this.state.mandate = m;
     await this.persist();
     return check;
@@ -388,7 +467,11 @@ export class Wallet {
   }
 
   /** Seals what this agent was asked and what it did. */
-  async sealAction(p: { instruction: string; action: string; details?: Json }): Promise<{ entry: string; index: number; sealedAt: string }> {
+  sealAction(p: { instruction: string; action: string; details?: Json }): Promise<{ entry: string; index: number; sealedAt: string }> {
+    return this.withLock(() => this.sealActionNow(p));
+  }
+
+  private async sealActionNow(p: { instruction: string; action: string; details?: Json }): Promise<{ entry: string; index: number; sealedAt: string }> {
     const mandate = this.myMandate();
     await this.refuseIfRevoked(mandate, "my");
     const clauses = [
@@ -396,6 +479,8 @@ export class Wallet {
       { name: "action", value: p.action },
       ...(p.details === undefined ? [] : [{ name: "details", value: p.details }]),
     ];
+    const tooLong = clausesSizeProblem(Object.fromEntries(clauses.map((c) => [c.name, c.value])) as Record<string, Json>);
+    if (tooLong) throw new Error(tooLong);
     const opened = commitClauses(clauses);
     const record = signRecord(
       createRecord({
@@ -436,7 +521,11 @@ export class Wallet {
   }
 
   /** Prepares and signs an agreement; the result goes to the counterparty. */
-  async propose(p: { counterparty: Mandate; clauses: Record<string, Json>; allowUnverifiedOwner?: boolean }): Promise<Offer> {
+  propose(p: { counterparty: Mandate; clauses: Record<string, Json>; allowUnverifiedOwner?: boolean }): Promise<Offer> {
+    return this.withLock(() => this.proposeNow(p));
+  }
+
+  private async proposeNow(p: { counterparty: Mandate; clauses: Record<string, Json>; allowUnverifiedOwner?: boolean }): Promise<Offer> {
     const mine = this.myMandate();
     if (p.counterparty?.body?.agent === this.key.publicKey) throw new Error("cannot make an agreement with yourself");
     if (isApproval(p.counterparty))
@@ -475,10 +564,11 @@ export class Wallet {
    * Checks an offer received from another agent, signs it and seals it in the register.
    * Every other party is checked (signature, mandate, owner, revocations, amount) before anything is signed.
    */
-  async accept(
-    offer: Offer,
-    opts: { allowUnverifiedOwner?: boolean } = {},
-  ): Promise<{ entry: string; confirmation: Confirmation; counterparty: CounterpartyCheck; counterparties: CounterpartyCheck[] }> {
+  accept(offer: Offer, opts: { allowUnverifiedOwner?: boolean } = {}): Promise<Accepted> {
+    return this.withLock(() => this.acceptNow(offer, opts));
+  }
+
+  private async acceptNow(offer: Offer, opts: { allowUnverifiedOwner?: boolean }): Promise<Accepted> {
     const mine = this.myMandate();
     if (!offer || typeof offer !== "object") throw new Error("not an offer");
     const { record, opened, mandates } = offer;
@@ -514,6 +604,13 @@ export class Wallet {
 
     const signed = signRecord(record, this.key);
     const entry = entryHash(signed);
+    // The same offer again (sent twice, or replayed): never sealed or stored twice, never reopening a closed commitment.
+    const already = this.state.records[entry];
+    if (already) {
+      if (already.closed) throw new Error(`this agreement is already sealed in this wallet and was closed on ${already.closed.at} (${already.closed.outcome}): it cannot be accepted again`);
+      if (!already.receipt) throw new Error("this agreement is already in this wallet");
+      return { entry, confirmation: { type: "accord/confirmation", record: already.record, receipt: already.receipt }, counterparty: counterparties[0], counterparties, alreadySealed: true };
+    }
     const receipt = await this.register.append(entry);
     this.state.records[entry] = { kind: "agreement", record: signed, opened, mandates: [...theirMandates, mine], receipt };
     await this.persist();
@@ -671,7 +768,11 @@ export class Wallet {
   }
 
   /** The proposer files the counterparty's confirmation. */
-  async confirm(c: Confirmation): Promise<{ entry: string }> {
+  confirm(c: Confirmation): Promise<{ entry: string }> {
+    return this.withLock(() => this.confirmNow(c));
+  }
+
+  private async confirmNow(c: Confirmation): Promise<{ entry: string }> {
     const pending = this.state.offers[c.record.body.clausesRoot];
     if (!pending) throw new Error("no offer of mine matches this confirmation");
     // Compared in canonical form: the same agreement may come back with its fields in another order (e.g. through a sealed form).
@@ -762,13 +863,17 @@ export class Wallet {
   }
 
   /** Closes an open agreement with its outcome, sealing an action that names it: the ending can be proven too. */
-  async closeCommitment(p: { entry: string; outcome: CommitmentOutcome; note?: string }) {
+  closeCommitment(p: { entry: string; outcome: CommitmentOutcome; note?: string }) {
+    return this.withLock(() => this.closeCommitmentNow(p));
+  }
+
+  private async closeCommitmentNow(p: { entry: string; outcome: CommitmentOutcome; note?: string }) {
     const r = this.state.records[p.entry];
     if (!r || r.kind !== "agreement") throw new Error("no sealed agreement of mine with this fingerprint (see symbolon_my_commitments)");
     if (r.closed) throw new Error(`already closed on ${r.closed.at} as ${r.closed.outcome}`);
     if (!(COMMITMENT_OUTCOMES as readonly string[]).includes(p.outcome)) throw new Error(`outcome must be one of ${COMMITMENT_OUTCOMES.join(", ")}`);
     if (p.note !== undefined && (typeof p.note !== "string" || p.note.length > 500)) throw new Error("note: plain text of at most 500 characters");
-    const sealed = await this.sealAction({
+    const sealed = await this.sealActionNow({
       instruction: `close commitment ${p.entry}`,
       action: p.outcome,
       details: { closes: p.entry, outcome: p.outcome, ...(p.note ? { note: p.note } : {}) },
@@ -790,7 +895,20 @@ export class Wallet {
    * Right of withdrawal: within the period stated in the agreement (clause withdrawal_until), either party can
    * withdraw. The withdrawal is sealed; the result includes a sealed form, with its proof, to send to the other side.
    */
-  async withdraw(p: { entry: string; reason: (typeof WITHDRAWAL_REASONS)[number] }) {
+  withdraw(p: { entry: string; reason: (typeof WITHDRAWAL_REASONS)[number] }) {
+    return this.withLock(() => this.withdrawNow(p));
+  }
+
+  /** The mandate ids under which a party of this agreement may withdraw: the one it used, or the general mandate its owner's approval extends. */
+  private withdrawalMandates(r: StoredRecord, agent: PublicKey): string[] {
+    const used = r.record.body.parties.find((x) => x.agent === agent)?.mandate;
+    if (!used) return [];
+    const m = r.mandates.find((x) => mandateId(x) === used);
+    const under = m && m.body.type === "accord/mandate" ? m.body.agreement?.under : undefined;
+    return under ? [used, under] : [used];
+  }
+
+  private async withdrawNow(p: { entry: string; reason: (typeof WITHDRAWAL_REASONS)[number] }) {
     const r = this.state.records[p.entry];
     if (!r || r.kind !== "agreement") throw new Error("no sealed agreement of mine with this fingerprint (see symbolon_my_commitments)");
     if (r.closed) throw new Error(`already closed on ${r.closed.at} as ${r.closed.outcome}`);
@@ -798,7 +916,10 @@ export class Wallet {
     const until = this.withdrawalUntil(r);
     if (until === null) throw new Error(`this agreement gives no right of withdrawal (no clause ${WITHDRAWAL_CLAUSE})`);
     if (this.now().getTime() >= until) throw new Error(`the withdrawal period ended on ${new Date(until).toISOString()}`);
-    const sealed = await this.sealAction({
+    // The other side accepts a withdrawal only under the mandate this agent used in the agreement.
+    if (!this.withdrawalMandates(r, this.key.publicKey).includes(mandateId(this.myMandate())))
+      throw new Error("my mandate changed since this agreement was sealed: a withdrawal under another mandate would not be accepted by the other party");
+    const sealed = await this.sealActionNow({
       instruction: `withdraw agreement ${p.entry}`,
       action: "withdrawn",
       details: { closes: p.entry, outcome: "withdrawn", reason: p.reason },
@@ -821,7 +942,11 @@ export class Wallet {
    * Records a withdrawal made by the other party, only after checking it: the proof must be sound, be signed by
    * a party of this agreement other than me, say it withdraws this very agreement, and be sealed in time.
    */
-  async recordWithdrawal(form: { about: string; proof: unknown }) {
+  recordWithdrawal(form: { about: string; proof: unknown }) {
+    return this.withLock(() => this.recordWithdrawalNow(form));
+  }
+
+  private async recordWithdrawalNow(form: { about: string; proof: unknown }) {
     const r = this.state.records[form?.about];
     if (!r || r.kind !== "agreement") throw new Error("no sealed agreement of mine with this fingerprint");
     if (r.closed) throw new Error(`already closed on ${r.closed.at} as ${r.closed.outcome}`);
@@ -838,6 +963,10 @@ export class Wallet {
     if (report.disclosed["action"] !== "withdrawn") throw new Error("the proof does not show the action 'withdrawn'");
     const by = proof.record.body.parties[0]?.agent;
     if (by === this.key.publicKey || !r.record.body.parties.some((x) => x.agent === by)) throw new Error("the withdrawal is not signed by the other party of this agreement");
+    // Under the very mandate that party used in the agreement (its revocation before sealing is checked by verify):
+    // not under any mandate the agent key could get or make itself after its owner revoked it.
+    if (!this.withdrawalMandates(r, by).includes(proof.record.body.parties[0].mandate))
+      throw new Error("the withdrawal was sealed under another mandate than the one that party used in this agreement: not accepted");
     const d = report.disclosed["details"] as { closes?: string; outcome?: string } | undefined;
     if (d?.closes !== form.about || d?.outcome !== "withdrawn") throw new Error("the proof does not withdraw this agreement");
     if (!report.sealedAt || Date.parse(report.sealedAt) > until) throw new Error(`withdrawn too late: sealed at ${report.sealedAt}, period ended ${new Date(until).toISOString()}`);
@@ -950,8 +1079,13 @@ export class Wallet {
 
   private checkAmount(clauses: Record<string, Json>, m: Mandate, mine = false) {
     this.checkWithdrawalClause(clauses);
+    const tooLong = clausesSizeProblem(clauses);
+    if (tooLong) throw new Error(tooLong);
     const has = Object.prototype.hasOwnProperty.call(clauses, "amount");
     const amount = (has ? clauses["amount"] : undefined) as unknown as Amount | undefined;
+    // Exactly {value, currency}, under any mandate: a quantity, a "per day" or a nested total beside it would change the price unchecked.
+    const badAmount = has ? amountClauseProblem(amount) : null;
+    if (badAmount) throw new Error(badAmount);
     const max = spendingLimit(m);
     if (!max) return;
     for (const [name, value] of Object.entries(clauses))
@@ -959,13 +1093,12 @@ export class Wallet {
         throw new Error(`clause "${name}" contains an amount: under a mandate with a spending limit the price goes only in the "amount" clause`);
     if (amount === undefined)
       throw new Error(`the mandate of ${ownerName(m.body.owner)} has a spending limit (${max.value} ${max.currency}): the agreement needs an "amount" clause {value, currency}`);
-    if (!amount || typeof amount !== "object" || typeof amount.value !== "string" || typeof amount.currency !== "string")
-      throw new Error("the amount clause must be {value: '123.45', currency: 'EUR'}");
     let within = false;
     try {
       within = amount.currency === max.currency && amountLeq(amount.value, max.value);
     } catch {
-      throw new Error(`invalid amount ${amount.value}`);
+      // Never the value itself: it comes from the other agent and would read as the wallet's own words.
+      throw new Error("invalid amount value (a decimal string such as '123.45' is expected)");
     }
     if (!within)
       throw new Error(

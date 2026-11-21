@@ -313,7 +313,8 @@ test("hosted: only the owner's passkey signs a request, over exactly what the pa
   const stranger = generateKeyPair();
   const agent = (await c.call("symbolon_whoami")).agent;
   const foreign = createMandate(stranger as KeyPair, { agent, scope: "anything", notBefore: new Date(Date.now() - DAY).toISOString(), notAfter: new Date(Date.now() + DAY).toISOString(), charter: "accord-charter/0.1" });
-  await assert.rejects(c.call("symbolon_install_mandate", { mandate: foreign }), /only mandates signed by the owner's own key/);
+  // On a hosted wallet the assistant cannot install mandates at all: only the owner's page does (security-d, A1).
+  await assert.rejects(c.call("symbolon_install_mandate", { mandate: foreign }), /symbolon_install_mandate not found/);
   assert.equal((await c.call("symbolon_whoami")).mandate, null);
   // The agent cannot ask for more than a valid mandate allows (dates, amount format).
   await assert.rejects(c.call("symbolon_ask_owner_for_mandate", { scope: "x", max_amount: { value: "lots", currency: "EUR" }, days: 10 }));

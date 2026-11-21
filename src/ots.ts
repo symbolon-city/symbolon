@@ -34,6 +34,18 @@ const BITCOIN = "0588960d73d71901";
 const MAGIC = fromHex("004f70656e54696d657374616d7073000050726f6f6600bf89e2e884e89294");
 const MAX_MSG = 4096;
 const MAX_DEPTH = 256;
+/** Largest .ots file or calendar answer read (real ones are a few KB). */
+export const MAX_OTS_BYTES = 128 * 1024;
+/** Most nodes in a timestamp tree, and most message bytes kept in all of them together. */
+const MAX_NODES = 10_000;
+const MAX_TREE_BYTES = 4 * 1024 * 1024;
+
+/** What one parse may still use: every node keeps its own message, so a small file could otherwise fill memory. */
+interface Budget {
+  nodes: number;
+  bytes: number;
+}
+const newBudget = (): Budget => ({ nodes: MAX_NODES, bytes: MAX_TREE_BYTES });
 
 export function applyOp(op: Op, msg: Uint8Array): Uint8Array {
   switch (op.tag) {
@@ -105,20 +117,23 @@ function readAttestation(r: Reader): Attestation {
   return { kind: "unknown", tag, payload };
 }
 
-function readTimestamp(r: Reader, msg: Uint8Array, depth: number): Timestamp {
+function readTimestamp(r: Reader, msg: Uint8Array, depth: number, budget: Budget): Timestamp {
   if (depth > MAX_DEPTH) throw new Error("timestamp too deep");
+  if (--budget.nodes < 0) throw new Error("timestamp has too many operations");
+  budget.bytes -= msg.length;
+  if (budget.bytes < 0) throw new Error("timestamp too large");
   const ts = newTimestamp(msg);
   const item = (tag: number) => {
     if (tag === 0x00) {
       ts.attestations.push(readAttestation(r));
     } else if (tag in UNARY) {
       const op = { tag: UNARY[tag] } as Op;
-      ts.ops.push({ op, stamp: readTimestamp(r, applyOp(op, msg), depth + 1) });
+      ts.ops.push({ op, stamp: readTimestamp(r, applyOp(op, msg), depth + 1, budget) });
     } else if (tag in BINARY) {
       const op: Op = { tag: BINARY[tag], arg: r.varbytes() };
       const next = applyOp(op, msg);
       if (next.length > MAX_MSG) throw new Error("message too long");
-      ts.ops.push({ op, stamp: readTimestamp(r, next, depth + 1) });
+      ts.ops.push({ op, stamp: readTimestamp(r, next, depth + 1, budget) });
     } else {
       throw new Error(`unknown op tag 0x${tag.toString(16)}`);
     }
@@ -134,8 +149,9 @@ function readTimestamp(r: Reader, msg: Uint8Array, depth: number): Timestamp {
 
 /** Parses a timestamp (as returned by a calendar) for the given starting message. */
 export function parseTimestamp(bytes: Uint8Array, msg: Uint8Array): Timestamp {
+  if (bytes.length > MAX_OTS_BYTES) throw new Error("timestamp too large");
   const r = new Reader(bytes);
-  const ts = readTimestamp(r, msg, 0);
+  const ts = readTimestamp(r, msg, 0, newBudget());
   if (!r.done()) throw new Error("trailing bytes after timestamp");
   return ts;
 }
@@ -191,13 +207,19 @@ export function toOtsFile(ts: Timestamp): Uint8Array {
   return concat(MAGIC, varuint(1), new Uint8Array([0x08]), ts.msg, serializeTimestamp(ts));
 }
 
-export function fromOtsFile(bytes: Uint8Array): Timestamp {
+/**
+ * Reads a detached .ots file. With `expectedDigest`, a file for another digest is refused before its tree is
+ * read (so a file that is not about what is being checked costs nothing to look at).
+ */
+export function fromOtsFile(bytes: Uint8Array, expectedDigest?: Uint8Array): Timestamp {
+  if (bytes.length > MAX_OTS_BYTES) throw new Error(`.ots file too large (at most ${MAX_OTS_BYTES} bytes)`);
   const r = new Reader(bytes);
   if (!equalBytes(r.bytes(MAGIC.length), MAGIC)) throw new Error("not an OpenTimestamps file");
   if (r.varuint() !== 1) throw new Error("unsupported .ots version");
   if (r.byte() !== 0x08) throw new Error("only sha256 file digests are supported");
   const digest = r.bytes(32);
-  const ts = readTimestamp(r, digest, 0);
+  if (expectedDigest && !equalBytes(digest, expectedDigest)) throw new Error(".ots is for a different digest");
+  const ts = readTimestamp(r, digest, 0, newBudget());
   if (!r.done()) throw new Error("trailing bytes in .ots file");
   return ts;
 }
