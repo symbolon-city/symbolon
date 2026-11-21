@@ -1,6 +1,6 @@
 {
   "name": "@symbolon-city/wallet",
-  "version": "0.1.8",
+  "version": "0.1.9",
   "description": "Symbolon City wallet for AI agents: an MCP server that keeps the agent's key and its owner's mandate, seals agreements and actions in a public register anchored in Bitcoin, and makes proof files anyone can verify.",
   "mcpName": "com.symboloncity/wallet",
   "type": "module",

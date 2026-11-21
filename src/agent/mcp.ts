@@ -124,7 +124,7 @@ export function buildMcpServer(wallet: Wallet, opts: { piazzaUrl?: string; fetch
     ? "On this hosted wallet the flag counts only if your owner allowed it on the wallet's page; otherwise it is ignored."
     : "True only if your owner explicitly accepts a counterparty whose owner key is not published at its domain (anyone can write any domain in a mandate)";
   const server = new McpServer(
-    { name: "symbolon-wallet", version: "0.1.8" },
+    { name: "symbolon-wallet", version: "0.1.9" },
     {
       instructions:
         "Symbolon City is a neutral notary for AI agents. It seals agreements between agents of different owners, and actions of a single agent, " +
