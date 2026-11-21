@@ -5,7 +5,7 @@
 import { randomBytes, toBase64url } from "../bytes.js";
 
 export type PageModel =
-  | { view: "authorize"; origin: string; request: string; client: string; redirectHost: string }
+  | { view: "authorize"; origin: string; request: string; client: string; redirectHost: string; returnKind: "device" | "known" | "app" | "web" }
   | { view: "owner"; origin: string; request?: string }
   | { view: "error"; origin: string; message: string };
 
@@ -69,6 +69,16 @@ const T = IT ? {
   history: "Storico", previousAgent: "Agente precedente (bloccato)", yours: "I tuoi dati",
   exportWhat: "Scarica deleghe, accordi e prove in un file: sono tuoi e puoi portarli altrove. Le chiavi segrete dell'agente non ci sono.", exportAll: "Scarica tutto",
   outcomes: { fulfilled: "eseguito", cancelled_by_agreement: "annullato d'accordo", not_fulfilled: "non eseguito", withdrawn: "ripensamento" }, error: "Errore", again: "Riprova",
+  sentBackTo: "Chi chiede l'accesso tornerà a questo indirizzo", nameSaid: "Si presenta come", selfDeclared: "nome scelto da chi chiede, non verificato",
+  returnWeb: "Questo indirizzo non è di un assistente noto. Continua solo se hai avviato tu il collegamento, dal tuo assistente, proprio adesso.",
+  returnApp: "Questo indirizzo apre un'app sul dispositivo. Continua solo se hai avviato tu il collegamento, dalla tua app, proprio adesso.",
+  confirmNew: "Conferma la nuova chiave con Face ID", confirmNewWhat: "Ultimo passo: la tua nuova chiave firma una volta, per provare che è davvero sul tuo dispositivo.",
+  notVerified: "NON VERIFICATO", notChecked: "IDENTITÀ NON CONTROLLATA", claims: "dice di essere", keyOnly: "senza sito: riconosciuto solo dalla sua chiave",
+  unverifiedWhy: "Il suo sito non conferma questa chiave: potrebbe essere qualcun altro. Non firmare se non hai controllato in altro modo.",
+  revokeMandate: "Revoca questa delega con Face ID", revokeWhat: "Il tuo agente non potrà più usarla, e chiunque la controlli la vedrà revocata: la revoca viene sigillata nel registro pubblico.",
+  replacedTitle: "La delega precedente non vale più per il tuo agente", replacedWhat: "L'hai firmata tu, quindi chi ne ha una copia potrebbe ancora mostrarla altrove. Revocala pubblicamente per chiuderla ovunque.",
+  revokePrev: "Revoca la delega precedente con Face ID", replacedList: "Deleghe sostituite (ancora valide fuori da qui)", revokedDone: "Revocata.",
+  assistants: "Assistenti collegati", noAssistants: "Nessun assistente collegato.", connectedOn: "Collegato il", returnHost: "Indirizzo", disconnect: "Scollega",
 } : {
   connectTitle: "Connect your assistant", connectWho: "asks to use your Symbolon wallet", returnTo: "You will return to",
   connectWhat: "It will be able to prepare agreements on your behalf. Nothing is valid without your signature: a mandate or an approval you read here and confirm with Face ID.",
@@ -88,6 +98,16 @@ const T = IT ? {
   history: "History", previousAgent: "Previous agent (blocked)", yours: "Your data",
   exportWhat: "Download mandates, agreements and proofs in one file: they are yours and you can take them elsewhere. The agent's secret keys are not in it.", exportAll: "Download everything",
   outcomes: { fulfilled: "fulfilled", cancelled_by_agreement: "cancelled by agreement", not_fulfilled: "not fulfilled", withdrawn: "withdrawn" }, error: "Error", again: "Try again",
+  sentBackTo: "Whoever asks for access will be sent back to this address", nameSaid: "It calls itself", selfDeclared: "name chosen by the requester, not verified",
+  returnWeb: "This address is not a well-known assistant. Continue only if you started this connection yourself, from your assistant, just now.",
+  returnApp: "This address opens an app on the device. Continue only if you started this connection yourself, from your app, just now.",
+  confirmNew: "Confirm the new passkey with Face ID", confirmNewWhat: "Last step: your new passkey signs once, to prove it really is on your device.",
+  notVerified: "NOT VERIFIED", notChecked: "IDENTITY NOT CHECKED", claims: "claims", keyOnly: "no website: known only by its key",
+  unverifiedWhy: "Its website does not confirm this key: it may be someone else. Do not sign unless you checked by other means.",
+  revokeMandate: "Revoke this mandate with Face ID", revokeWhat: "Your agent can no longer use it, and anyone who checks it sees it revoked: the revocation is sealed in the public register.",
+  replacedTitle: "The previous mandate no longer works for your agent", replacedWhat: "You signed it, so whoever holds a copy could still show it elsewhere. Revoke it publicly to end it everywhere.",
+  revokePrev: "Revoke the previous mandate with Face ID", replacedList: "Replaced mandates (still valid outside this wallet)", revokedDone: "Revoked.",
+  assistants: "Connected assistants", noAssistants: "No assistant connected.", connectedOn: "Connected on", returnHost: "Address", disconnect: "Disconnect",
 };
 document.documentElement.lang = IT ? "it" : "en";
 const app = document.getElementById("app");
@@ -126,8 +146,31 @@ async function passkeyLogin(purpose, create) {
     authenticatorSelection: { residentKey: "required", requireResidentKey: true, userVerification: "required" },
   } });
   const r = cred.response;
-  return post("/auth/signup", { nonce: c.nonce, credentialId: b64u(cred.rawId), publicKey: b64u(r.getPublicKey()), clientDataJSON: b64u(r.clientDataJSON), authenticatorData: b64u(r.getAuthenticatorData()) });
+  const s = await post("/auth/signup", { nonce: c.nonce, credentialId: b64u(cred.rawId), publicKey: b64u(r.getPublicKey()), clientDataJSON: b64u(r.clientDataJSON), authenticatorData: b64u(r.getAuthenticatorData()) });
+  // The new passkey proves it is on this device by signing the server's second challenge (on a tap: browsers
+  // want a fresh gesture for each passkey prompt).
+  const k = s.confirm;
+  const signature = await onTap(T.confirmNew, T.confirmNewWhat, () => passkeySign(k.challenge, k.credential_id));
+  return post("/auth/signup/confirm", { nonce: k.nonce, signature });
 }
+
+/** Shows a button and runs fn (synchronously, inside the tap) when it is pressed; resolves with fn's result. */
+function onTap(label, text, fn) {
+  return new Promise((resolve, reject) => {
+    const b = el("button", {}, label);
+    b.onclick = () => { b.disabled = true; Promise.resolve().then(() => fn()).then(resolve, reject); };
+    app.append(el("p", {}, text), b);
+  });
+}
+
+/** One other side of an agreement, with how sure the wallet is of who it is. */
+function party(p) {
+  if (!p || typeof p !== "object") return el("span", {}, String(p));
+  if (p.level === "domain") return el("span", {}, p.owner);
+  if (p.level === "key") return el("span", {}, p.owner + " ", el("span", { class: "muted" }, "(" + T.keyOnly + ")"));
+  return el("span", { class: "err" }, (p.level === "unverified" ? T.notVerified : T.notChecked) + ": " + T.claims + " " + p.owner);
+}
+const parties = (list) => { const s = el("span"); (list || []).forEach((p, i) => { if (i) s.append(", "); s.append(party(p)); }); return s; };
 
 /** Signs a value prepared by the server (its challenge is the fingerprint of the exact text shown) with the owner's passkey. */
 async function passkeySign(challenge, credentialId) {
@@ -147,8 +190,13 @@ function authorizeView() {
   };
   const a = el("button", {}, T.signIn), b = el("button", { class: "secondary" }, T.firstTime);
   a.onclick = busy(a, () => go(false)); b.onclick = busy(b, () => go(true));
-  show(el("h1", {}, T.connectTitle), el("div", { class: "card" }, el("p", { class: "big" }, MODEL.client), el("p", {}, T.connectWho),
-    el("p", { class: "muted" }, T.returnTo + " " + MODEL.redirectHost), el("p", {}, T.connectWhat)), a, b);
+  // The return address is what can be trusted (the code goes there): it comes first. The name is only what the requester says.
+  const warn = MODEL.returnKind === "web" ? T.returnWeb : MODEL.returnKind === "app" ? T.returnApp : null;
+  show(el("h1", {}, T.connectTitle), el("div", { class: "card" },
+    el("p", { class: "muted" }, T.sentBackTo), el("p", { class: "big" }, MODEL.redirectHost),
+    warn ? el("p", { class: "err" }, warn) : null,
+    el("p", {}, T.nameSaid + " \u201c" + MODEL.client + "\u201d ", el("span", { class: "muted" }, "(" + T.selfDeclared + ")"), " \u2014 " + T.connectWho),
+    el("p", {}, T.connectWhat)), a, b);
 }
 
 async function requestView(id) {
@@ -161,7 +209,9 @@ async function requestView(id) {
   } else {
     card.append(el("h1", {}, T.reqApproval));
     const amount = r.clauses.amount;
-    dl.append(el("dt", {}, T.counterparty), el("dd", { class: "big" }, r.counterparty.owner), el("dt", {}, T.amount), el("dd", { class: "big" }, money(amount)),
+    const sure = r.counterparty.level === "domain" || r.counterparty.level === "key";
+    dl.append(el("dt", {}, T.counterparty), el("dd", { class: "big" }, party(r.counterparty)), sure ? null : el("dd", { class: "err" }, T.unverifiedWhy),
+      el("dt", {}, T.amount), el("dd", { class: "big" }, money(amount)),
       el("dt", {}, T.generalLimit), el("dd", {}, money(r.general_limit)), el("dt", {}, T.validUntil), el("dd", {}, day(r.approval_body.notAfter)), el("dt", {}, T.clauses));
     for (const [k, v] of Object.entries(r.clauses)) dl.append(el("dd", {}, el("b", {}, k + ": "), typeof v === "string" ? v : JSON.stringify(v)));
   }
@@ -169,8 +219,19 @@ async function requestView(id) {
   const b = el("button", {}, T.sign);
   b.onclick = busy(b, async () => {
     const signature = await passkeySign(r.challenge, r.credential_id);
-    await post("/owner/api/request/" + id, { signature });
+    const done = await post("/owner/api/request/" + id, { signature });
     show(el("h1", {}, T.signed));
+    if (done.replaced) {
+      const p = done.replaced;
+      const rb = el("button", { class: "danger" }, T.revokePrev);
+      rb.onclick = busy(rb, async () => {
+        const sig = await passkeySign(p.revoke.challenge, p.revoke.credential_id);
+        await post("/owner/api/revoke-mandate", { body: p.revoke.body, signature: sig });
+        rb.replaceWith(el("p", { class: "ok" }, T.revokedDone));
+      });
+      app.append(el("div", { class: "card" }, el("h2", {}, T.replacedTitle), el("p", {}, p.scope + " \u00b7 " + money(p.max_amount) + " \u00b7 " + T.until + " " + day(p.valid_until)),
+        el("p", { class: "muted" }, T.replacedWhat), rb));
+    }
   });
   show(card, b, el("p", { class: "muted" }, T.notSign));
 }
@@ -191,7 +252,7 @@ function historyList(items, gen, session) {
     const b = el("button", { class: "secondary" }, T.proof);
     b.onclick = busy(b, () => download("/owner/api/proof/" + gen + "/" + h.entry, session, "symbolon-proof-" + h.entry.slice(0, 12) + ".json"));
     nodes.push(el("div", { class: "card" },
-      el("b", {}, (h.kind === "agreement" ? T.agreement : T.action) + (h.with.length ? " · " + h.with.join(", ") : "")),
+      el("b", {}, (h.kind === "agreement" ? T.agreement : T.action) + (h.with.length ? " · " : ""), h.parties ? parties(h.parties) : h.with.join(", ")),
       el("p", { class: "muted" }, T.sealed + " " + day(h.sealed_at) + (h.closed ? " · " + outcomeText(h.closed.outcome) : "")), b));
   }
   return nodes;
@@ -206,7 +267,12 @@ async function ownerView(session) {
     ? el("dl", {}, el("dt", {}, T.scope), el("dd", { class: "big" }, m.scope), el("dt", {}, T.limit), el("dd", {}, money(m.maxAmount)), el("dt", {}, T.until), el("dd", {}, day(m.validUntil)))
     : el("p", {}, T.noMandate),
     s.mandate_revoked ? el("p", { class: "err" }, T.revoked) : null,
-    el("p", { class: "muted" }, el("code", {}, s.agent))));
+    el("p", { class: "muted" }, el("code", {}, s.agent)),
+    s.mandate_revocable ? revokeButton(s.mandate_id, T.revokeMandate, T.revokeWhat, session) : null));
+  if ((s.replaced_mandates || []).length) {
+    nodes.push(el("h2", {}, T.replacedList), el("p", { class: "muted" }, T.replacedWhat));
+    for (const p of s.replaced_mandates) nodes.push(el("div", { class: "card" }, el("p", {}, p.scope + " \u00b7 " + money(p.max_amount) + " \u00b7 " + T.until + " " + day(p.valid_until)), revokeButton(p.id, T.revokePrev, null, session)));
+  }
 
   nodes.push(el("h2", {}, T.requests));
   if (!s.requests.length) nodes.push(el("p", { class: "muted" }, T.noRequests));
@@ -219,7 +285,7 @@ async function ownerView(session) {
     const b = el("button", { class: "secondary" }, T.proof);
     b.onclick = busy(b, () => download("/owner/api/proof/" + s.agent_gen + "/" + x.entry, session, "symbolon-proof-" + x.entry.slice(0, 12) + ".json"));
     nodes.push(el("div", { class: "card" },
-      el("b", {}, (x.with || []).map((w) => w.owner).join(", ")),
+      el("b", {}, parties(x.with)),
       x.overdue ? el("p", { class: "err" }, T.overdue) : null,
       x.next_date ? el("p", {}, T.nextDate + ": " + day(x.next_date.date) + " (" + x.next_date.clause + ")") : null,
       x.can_withdraw_until ? el("p", { class: "muted" }, T.withdrawUntil + " " + day(x.can_withdraw_until)) : null,
@@ -228,7 +294,7 @@ async function ownerView(session) {
   const waiting = (c.waiting || []).concat(c.waiting_for_owner || []);
   if (waiting.length) {
     nodes.push(el("h2", {}, T.waiting));
-    for (const w of waiting) nodes.push(el("div", { class: "card" }, el("b", {}, ((w.to || w.with) || []).map((p) => p.owner).join(", ")),
+    for (const w of waiting) nodes.push(el("div", { class: "card" }, el("b", {}, parties(w.to || w.with)),
       el("p", { class: "muted" }, (w.ask_until ? T.waitingYou : T.waitingThem) + " · " + clauseText(w.clauses))));
   }
 
@@ -237,6 +303,15 @@ async function ownerView(session) {
   for (const p of s.previous_agents || []) {
     if (!p.history.length) continue;
     nodes.push(el("h2", {}, T.previousAgent), el("p", { class: "muted" }, el("code", {}, p.agent)), ...historyList(p.history, p.gen, session));
+  }
+
+  nodes.push(el("h2", {}, T.assistants));
+  if (!(s.assistants || []).length) nodes.push(el("p", { class: "muted" }, T.noAssistants));
+  for (const a of s.assistants || []) {
+    const d = el("button", { class: "secondary" }, T.disconnect);
+    d.onclick = busy(d, async () => { await post("/owner/api/disconnect", { id: a.id }, session); await ownerView(session); });
+    nodes.push(el("div", { class: "card" }, el("b", {}, a.return_host), el("p", {}, T.nameSaid + " \u201c" + a.name + "\u201d ", el("span", { class: "muted" }, "(" + T.selfDeclared + ")")),
+      el("p", { class: "muted" }, T.connectedOn + " " + day(a.connected_at)), d));
   }
 
   const exp = el("button", { class: "secondary" }, T.exportAll);
@@ -252,6 +327,18 @@ async function ownerView(session) {
   });
   nodes.push(el("h2", {}, T.block), el("p", { class: "muted" }, T.blockWhat), block, el("p", { class: "muted" }, T.identity + ": ", el("code", {}, s.owner_key)));
   show(...nodes);
+}
+
+/** Revokes one mandate signed on this page: the owner signs the revocation the server prepared, it is sealed in the register. */
+function revokeButton(id, label, text, session) {
+  const b = el("button", { class: "danger" }, label);
+  b.onclick = busy(b, async () => {
+    const r = await api("/owner/api/revoke-mandate?id=" + encodeURIComponent(id), { headers: { authorization: "Bearer " + session } });
+    const signature = await passkeySign(r.challenge, r.credential_id);
+    await post("/owner/api/revoke-mandate", { body: r.body, signature }, session);
+    await ownerView(session);
+  });
+  return text ? el("div", {}, el("p", { class: "muted" }, text), b) : b;
 }
 
 function ownerSignIn() {
