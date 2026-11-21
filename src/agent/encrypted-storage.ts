@@ -14,7 +14,7 @@
 
 import { createCipheriv, createDecipheriv, randomBytes, scrypt as scryptCb } from "node:crypto";
 import { execFile } from "node:child_process";
-import { chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
+import { access, chmod, mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import { dirname } from "node:path";
 import type { WalletState, WalletStorage } from "./wallet.js";
 
@@ -134,6 +134,8 @@ export function dpapiProvider(keyFile: string, run: Runner = defaultRunner): Key
 
 // ---------- storage ----------
 
+const exists = (p: string) => access(p).then(() => true, () => false);
+
 function aad(f: Pick<WalletFile, "format" | "v" | "key" | "cipher">): Buffer {
   return Buffer.from(JSON.stringify({ format: f.format, v: f.v, key: f.key, cipher: f.cipher }));
 }
@@ -164,9 +166,12 @@ export class EncryptedWalletStorage implements WalletStorage {
     }
     const parsed = JSON.parse(raw) as WalletFile | WalletState;
     if ((parsed as WalletFile).format !== FORMAT) {
-      // A wallet saved in clear by an earlier version: encrypt it now.
+      // A wallet saved in clear by an earlier version: encrypt it now. But never a clear file where an encrypted
+      // wallet was: whoever can write the file could otherwise swap in a wallet of their own (key, mandate, records).
       const state = parsed as WalletState;
       if (state.v !== 1 || typeof state.agentSecret !== "string") throw new Error("unrecognised wallet file");
+      if (await this.wasEncrypted())
+        throw new Error(`this wallet was encrypted before, and the file is now in clear: refused (it may have been replaced). Restore the encrypted file, or remove ${this.markerPath} if you really mean to import this clear wallet`);
       await this.save(state);
       return state;
     }
@@ -199,6 +204,25 @@ export class EncryptedWalletStorage implements WalletStorage {
     await writeFile(tmp, JSON.stringify(file, null, 2), { mode: 0o600 });
     await rename(tmp, this.path);
     await chmod(this.path, 0o600);
+    if (!(await exists(this.markerPath))) await writeFile(this.markerPath, "This Symbolon wallet is encrypted: a copy in clear is refused.\n", { mode: 0o600 });
+  }
+
+  /** Written next to the wallet once it is encrypted. */
+  private get markerPath() {
+    return this.path + ".encrypted";
+  }
+
+  /** True if this wallet was saved encrypted before: the marker is there, or its Keychain / DPAPI key already exists. */
+  private async wasEncrypted(): Promise<boolean> {
+    if (await exists(this.markerPath)) return true;
+    const spec = await this.provider.spec();
+    if (spec.kind === "passphrase") return false;
+    try {
+      await this.provider.key(spec, false);
+      return true;
+    } catch {
+      return false;
+    }
   }
 
   private async existingSpec(): Promise<KeySpec | null> {

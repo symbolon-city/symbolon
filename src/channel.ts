@@ -85,11 +85,12 @@ export const BOX_MAX_CHARS = 96_000;
 /** Sizes a box's content is padded to (characters). */
 const PAD_SIZES = [512, 2_048, 8_192, 16_384];
 
-export function boxProblem(b: unknown): string | null {
+/** `maxChars`: the largest ciphertext accepted (the owner's archive takes larger boxes than the piazza). */
+export function boxProblem(b: unknown, maxChars = BOX_MAX_CHARS): string | null {
   const x = b as Box;
   if (!x || typeof x !== "object" || Object.keys(x).some((k) => !["v", "epk", "iv", "ct"].includes(k))) return "not a box";
   if (x.v !== 1 || typeof x.epk !== "string" || !HEX64.test(x.epk) || typeof x.iv !== "string" || !/^[0-9a-f]{24}$/.test(x.iv)) return "invalid box";
-  if (typeof x.ct !== "string" || !/^[A-Za-z0-9+/]+={0,2}$/.test(x.ct) || x.ct.length > BOX_MAX_CHARS) return `invalid box content (base64, at most ${BOX_MAX_CHARS} characters)`;
+  if (typeof x.ct !== "string" || !/^[A-Za-z0-9+/]+={0,2}$/.test(x.ct) || x.ct.length > maxChars) return `invalid box content (base64, at most ${maxChars} characters)`;
   return null;
 }
 

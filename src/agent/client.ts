@@ -3,8 +3,27 @@
 import type { Anchor } from "../anchor.js";
 import type { PublicKey } from "../keys.js";
 import { pinnedRegisterKey } from "../known-registers.js";
-import { verifyHeadSignature, type Receipt, type SignedTreeHead } from "../register.js";
+import { fromHex } from "../bytes.js";
+import { verifyInclusion } from "../merkle.js";
+import { entryLeaf, verifyHeadSignature, type Receipt, type SignedTreeHead } from "../register.js";
 import { fetchAllRevocations, type RegisteredRevocation, type Revocation } from "../revocation.js";
+
+/**
+ * Problem with a receipt the register gave for `entry`, or null: about that very entry, with a head signed by the
+ * key it names, and a path that proves the entry is in that head's tree. A receipt of another entry (replayed by a
+ * cache, a proxy or a register that dropped the entry) never makes the wallet believe something is sealed.
+ */
+export function receiptProblem(r: unknown, entry: string): string | null {
+  const x = r as Receipt;
+  if (!x || typeof x !== "object" || !x.head || typeof x.head !== "object") return "not a receipt";
+  if (x.entry !== entry) return "the receipt is for another entry";
+  if (!Number.isSafeInteger(x.index) || x.index < 0 || !Number.isSafeInteger(x.head.size) || x.index >= x.head.size) return "the receipt's position is invalid";
+  if (!Array.isArray(x.path) || x.path.length > 64 || x.path.some((p) => typeof p !== "string" || !/^[0-9a-f]{64}$/.test(p))) return "the receipt's path is invalid";
+  if (typeof x.head.root !== "string" || !/^[0-9a-f]{64}$/.test(x.head.root)) return "the receipt's head is invalid";
+  if (!verifyHeadSignature(x.head)) return "the receipt's head is not signed by the register";
+  if (!verifyInclusion(entryLeaf(entry), x.index, x.head.size, x.path.map(fromHex), fromHex(x.head.root))) return "the receipt does not prove that the entry is in the register";
+  return null;
+}
 
 export interface RegisterClient {
   info(): Promise<{ register_key: PublicKey }>;
@@ -70,12 +89,17 @@ export class HttpRegisterClient implements RegisterClient {
     });
     if (!res.ok) throw new Error(`register refused the entry: HTTP ${res.status}`);
     const receipt = (await res.json()) as Receipt;
-    this.checkHead(receipt.head);
+    this.checkHead(receipt?.head);
+    const bad = receiptProblem(receipt, entry);
+    if (bad) throw new Error(`the register's answer does not hold: ${bad}`);
     return receipt;
   }
   async receipt(entry: string) {
     const r = await this.get<Receipt>(`/v1/entries/${entry}`);
-    this.checkHead(r?.head);
+    if (!r) return r;
+    this.checkHead(r.head);
+    const bad = receiptProblem(r, entry);
+    if (bad) throw new Error(`the register's answer does not hold: ${bad}`);
     return r;
   }
   async head() {
