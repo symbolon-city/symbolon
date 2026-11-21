@@ -84,7 +84,7 @@ export function buildMcpServer(wallet: Wallet, opts: { piazzaUrl?: string; fetch
           }
         });
   const server = new McpServer(
-    { name: "symbolon-wallet", version: "0.1.7" },
+    { name: "symbolon-wallet", version: "0.1.8" },
     {
       instructions:
         "Symbolon City is a neutral notary for AI agents. It seals agreements between agents of different owners, and actions of a single agent, " +
