@@ -22,8 +22,8 @@ export interface AppDeps {
    * Revocations have their own daily cap, so a flood of plain entries can never block them.
    */
   allowWrite?: (req: Request, kind: WriteKind) => Promise<string | null>;
-  /** Counts a write that succeeded (only those count towards the daily caps). */
-  countWrite?: (kind: WriteKind) => Promise<void>;
+  /** Counts a write that succeeded (only those count towards the daily caps); `req` is the one given to allowWrite. */
+  countWrite?: (kind: WriteKind, req: Request) => Promise<void>;
   /** Anonymous public counters (/stats). Absent = not counted. */
   stats?: StatsStore;
   /** Runs work after the response (Cloudflare ctx.waitUntil); absent = awaited inline. */
@@ -104,7 +104,9 @@ export function describe(deps: AppDeps) {
       "GET /v1/revocations/{id}": "one revocation, with its receipt",
       "GET /stats": "public page with anonymous daily usage counters (JSON at /v1/stats)",
     },
-    limits: "writes are rate-limited per client and capped per day (revocations have their own cap); HTTP 429 means try again later",
+    limits:
+      "writes are rate-limited per client (an IPv4 address or an IPv6 /64) and capped per day, for each client and for everyone; " +
+      "revocations have their own limits (per client, per signing key, and a daily cap that never refuses a key's first revocation of the day); HTTP 429 means try again later",
     base_url: deps.baseUrl,
   };
 }
@@ -184,7 +186,7 @@ async function route(req: Request, deps: AppDeps): Promise<Response> {
         if (refused) return error(429, refused);
       }
       const res = await write(req, kind, deps);
-      if (res.status === 201 && deps.countWrite) await deps.countWrite(kind).catch(() => {});
+      if (res.status === 201 && deps.countWrite) await deps.countWrite(kind, req).catch(() => {});
       return res;
     }
 

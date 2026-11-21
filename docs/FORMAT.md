@@ -15,8 +15,10 @@ fingerprint: follow it to the letter.
   document, with its own vectors. Proofs made under version 1 stay verifiable with version 1 rules; those of the test
   register are labelled as tests, never binding commitments (see "What survives the launch" in `SECURITY.md`).
 
-Conventions: all hex is lowercase. Times are ISO 8601 UTC strings. "Fingerprint" always means SHA-256,
-written as 64 hex characters.
+Conventions: all hex is lowercase. Times are UTC strings of exactly the form `YYYY-MM-DDTHH:MM:SS(.sss)Z`
+(what `toISOString` writes, milliseconds optional) with real calendar values; mandate, approval, record and tree
+head times in any other form (no zone, an offset, a date only) are refused, so a time never depends on the
+verifier's time zone. "Fingerprint" always means SHA-256, written as 64 hex characters.
 
 ## 1. Canonical JSON
 
@@ -109,13 +111,21 @@ A mandate is `{"body": ..., "signature": ...}`, signed by the owner key over the
   is looked up, so a proof is not incomplete for that. Only that key revokes as owner. The piazza is for owners
   with a domain (its limits count owners per site). Test vector: `mandate_without_domain`.
 - **Approval of one agreement** ("approve just this one"): an owner-signed mandate with one more field,
-  `"agreement": { "clausesRoot": "<hex>", "with": ["<agent key of each other party>", ...], "under": "<id of the agent's general mandate>" }`.
-  It is valid only for an agreement whose `clausesRoot` is exactly that one and whose other parties are exactly
-  `with` (1-9 keys, once each, never the agent itself); it lasts at most 7 days (`notAfter - notBefore`); it
-  cannot be the top of a chain (no sub-mandates under it). It lets the agent go above its general limit for
-  that agreement only: its `maxAmount` is the approved amount. A revocation of the `under` mandate revokes it
-  too, so lookups also ask for that id. The agent prepares it (`symbolon_request_owner_approval`), the owner
-  signs it (passkey or owner key), the agent proposes the agreement with it. Test vector: `mandate_approval`.
+  `"agreement": { "clausesRoot": "<hex>", "with": ["<agent key of each other party>", ...], "withMandates": ["<mandate id of each of them, same order>", ...], "nonce": "<hex>", "under": "<id of the agent's general mandate>" }`.
+  It is valid only for **one record**: the record whose `nonce` is exactly `nonce` (32-64 hex characters, chosen
+  when the approval is asked), whose `clausesRoot` is exactly that one, and whose other parties are exactly
+  `with` (1-9 keys, once each, never the agent itself), each signing under exactly the mandate id at the same
+  position of `withMandates` (the same agent key under another owner's mandate is another party). The nonce is the
+  agreement's identity: a record with another nonce is another agreement and the approval does not cover it.
+  It lasts at most 7 days (`notAfter - notBefore`); it cannot be the top of a chain (no sub-mandates under it).
+  It lets the agent go above its general limit for that agreement only: its `maxAmount` is the approved amount.
+  **It ends with its general mandate:** a proof must also carry the `under` mandate, signed by the same owner (key
+  and domain) for the same agent, itself no approval, and valid at sealing time; a revocation of the `under`
+  mandate revokes the approval too, so lookups also ask for that id. The agent prepares it
+  (`symbolon_request_owner_approval`), the owner signs it (passkey or owner key), the agent proposes the agreement
+  with it, in a record carrying that nonce, and sends the general mandate with the offer.
+  `withMandates` and `nonce` exist since 21/11/2026: an approval without them is still well formed but allows no
+  record (none was in use). Test vector: `mandate_approval` (still in the earlier shape, to be regenerated).
 - Sub-mandates (`"type": "symbolon/submandate"`) are signed by the agent of the mandate above (`issuer`),
   name it by id (`parent`), copy the `owner` exactly (with or without `domain`), may add `total` and a salted `task`, and carry the links above
   in `chain` (outside the signed body). Limits and dates can never exceed those above. Details: `src/mandate.ts`.
@@ -133,6 +143,12 @@ A record is what agents sign:
 ```
 
 - Each party signs the canonical `body`. An agreement has 2-10 parties; an action exactly one.
+- **Amounts and limits.** When a party's mandate has a spending limit (`maxAmount`, or `total` in its chain), the
+  price is the `amount` clause and must be exactly `{"value": "<decimal>", "currency": "<ISO 4217>"}` with no other
+  key (a quantity, a period or a nested total would change what the price means): otherwise the proof is invalid.
+  A proof is complete only if it discloses **every** clause (`clauseCount` of them): a price could hide in an
+  undisclosed one. Disclosing only some clauses gives "incomplete", never "valid". Without any limit, selective
+  disclosure stays complete.
 - **Entry** (the only thing sent to the register) =
   `fingerprint(canonical({"body": body, "signatures": [ the signature of each party, in party order ]}))`,
   each signature written as `{"agent", "signature"}` and nothing else. Extra fields or reordered signatures
@@ -148,6 +164,8 @@ An append-only Merkle log (RFC 9162, Certificate Transparency v2) that sees only
   Inclusion and consistency proofs as in RFC 9162.
 - **Signed tree head** = `{"log", "size", "root", "time"}` signed by the register key (section 3);
   `log` is the register's public key. A receipt is `{entry, index, head, path}`.
+- A witness countersigns a head only if it extends the last head it saw, its `time` is not before that head's
+  time, and its `time` is within 5 minutes of the witness's own clock.
 - Each day the latest head is anchored in Bitcoin through OpenTimestamps.
 - **Public list of entries:** `GET /v1/entries?from=<index>` returns every entry in order (1000 per page, `next`
   for the following page) with the latest signed head. Anyone can keep a full copy: the leaves of the first

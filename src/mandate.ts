@@ -29,15 +29,25 @@ export interface Amount {
 
 /**
  * An owner's approval of one agreement only ("approve just this one" with Face ID): a mandate whose
- * `agreement` binds it to the exact clauses (their root) and the other parties, given under the agent's
- * general mandate (`under`, its id). It lets the agent go above its general limit for that agreement and
- * nothing else; revoking the general mandate revokes it too. It lasts at most APPROVAL_MAX_DAYS and cannot be
- * passed on to another agent.
+ * `agreement` binds it to the exact clauses (their root), the other parties (agent keys and the mandates they
+ * sign under) and the one record (its nonce), given under the agent's general mandate (`under`, its id). It
+ * lets the agent go above its general limit for that agreement and nothing else; it ends with the general
+ * mandate (expired, revoked, or not shown). It lasts at most APPROVAL_MAX_DAYS and cannot be passed on.
  */
 export interface AgreementBinding {
   clausesRoot: string;
   /** The agent keys of the other parties, in any order. */
   with: PublicKey[];
+  /**
+   * The mandate id each of those agents signs under, in the same order as `with` (since 21/11/2026): the same
+   * agent key under another owner's mandate is another party. Required for the approval to be usable.
+   */
+  withMandates?: string[];
+  /**
+   * The nonce of the one record this approval allows (since 21/11/2026, chosen when the approval is asked):
+   * the record's identity, so the approval cannot be used for a second agreement. Required to be usable.
+   */
+  nonce?: string;
   /** Id of the agent's general mandate this approval extends. */
   under: string;
 }
@@ -84,6 +94,23 @@ export interface SubMandateBody {
   charter: string;
   /** Salted fingerprints of the person's original instruction and of who the person is (no personal data in clear). */
   task?: { instruction: string; principal: string };
+}
+
+/**
+ * Strict time parser for mandates, approvals and records: only `YYYY-MM-DDTHH:MM:SS(.sss)Z` (UTC, as written by
+ * toISOString), with real calendar values. NaN for anything else, so a time never depends on the verifier's
+ * time zone ("2026-11-27T00:00:00" without a zone is refused, not read as local time).
+ */
+export function parseTime(s: unknown): number {
+  if (typeof s !== "string") return NaN;
+  const m = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,3}))?Z$/.exec(s);
+  if (!m) return NaN;
+  const [y, mo, d, h, mi, se] = m.slice(1, 7).map(Number);
+  const t = Date.UTC(y, mo - 1, d, h, mi, se, m[7] ? Number(m[7].padEnd(3, "0")) : 0);
+  const x = new Date(t);
+  if (x.getUTCFullYear() !== y || x.getUTCMonth() !== mo - 1 || x.getUTCDate() !== d || x.getUTCHours() !== h || x.getUTCMinutes() !== mi || x.getUTCSeconds() !== se)
+    return NaN;
+  return t;
 }
 
 export interface Mandate {
@@ -187,11 +214,20 @@ export const MANDATE_LIMITS = { scopeMaxChars: 500, charterMaxChars: 64 } as con
  * no trailing dot, a top-level label that starts with a letter (so no IP addresses, no "localhost").
  * One spelling per domain, so limits and lookups cannot be dodged with "EXAMPLE.com" or "example.com.".
  */
+/** Suffixes of names that are never public owner domains. */
+const INTERNAL_SUFFIXES = ["localhost", "internal", "local", "lan", "home.arpa", "intranet", "corp", "localdomain"];
+
 export function ownerDomainProblem(d: unknown): string | null {
   if (typeof d !== "string" || d.length > 253) return "owner domain is not a domain name";
   const labels = d.split(".");
   if (labels.length < 2 || labels.some((l) => !/^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?$/.test(l)) || !/^[a-z]/.test(labels[labels.length - 1]))
     return "owner domain must be a lowercase domain name like example.com (no trailing dot, no IP address)";
+  // Names that lead to internal hosts: the city fetches https://<domain>/.well-known/symbolon.json.
+  if (INTERNAL_SUFFIXES.some((x) => d === x || d.endsWith(`.${x}`))) return "owner domain must be a public domain name (not a local or internal one)";
+  // An IPv4 address written inside the name (nip.io / sslip.io style: 10.0.0.1.nip.io, 10-0-0-1.sslip.io).
+  const octet = "(?:25[0-5]|2[0-4]\\d|1\\d\\d|[1-9]?\\d)";
+  if (new RegExp(`(?:^|[.-])${octet}([.-])${octet}\\1${octet}\\1${octet}(?:$|[.-])`).test(d))
+    return "owner domain must not contain an IP address";
   return null;
 }
 
@@ -223,8 +259,8 @@ function oneProblem(x: Mandate, allowChain: boolean): string | null {
   if (typeof b.owner.key !== "string" || !OWNER_KEY.test(b.owner.key) || typeof b.agent !== "string" || !AGENT_KEY.test(b.agent)) return "invalid key in mandate";
   if (typeof b.scope !== "string" || b.scope.length > MANDATE_LIMITS.scopeMaxChars) return `mandate scope must be a text of at most ${MANDATE_LIMITS.scopeMaxChars} characters`;
   if (typeof b.charter !== "string" || b.charter.length > MANDATE_LIMITS.charterMaxChars) return "invalid mandate charter";
-  if (typeof b.notBefore !== "string" || typeof b.notAfter !== "string" || Number.isNaN(Date.parse(b.notBefore)) || Number.isNaN(Date.parse(b.notAfter)))
-    return "invalid mandate dates";
+  if (Number.isNaN(parseTime(b.notBefore)) || Number.isNaN(parseTime(b.notAfter)))
+    return "invalid mandate dates: times are YYYY-MM-DDTHH:MM:SS(.sss)Z, in UTC";
   if (b.maxAmount !== undefined && amountProblem(b.maxAmount, "maxAmount")) return "invalid mandate maxAmount";
   if (!sub && (b as MandateBody).agreement !== undefined) {
     const bad = bindingProblem(b as MandateBody);
@@ -245,29 +281,68 @@ function oneProblem(x: Mandate, allowChain: boolean): string | null {
   return null;
 }
 
+const BINDING_FIELDS = ["clausesRoot", "with", "withMandates", "nonce", "under"];
+/** The nonce of a record bound by an approval: 16 to 32 random bytes in hex (createRecord writes 16). */
+const APPROVAL_NONCE = /^[0-9a-f]{32,64}$/;
+
 /** Shape of an approval's binding to one agreement. */
 function bindingProblem(b: MandateBody): string | null {
   const a = b.agreement as AgreementBinding;
-  if (!a || typeof a !== "object" || Array.isArray(a) || Object.keys(a).some((k) => k !== "clausesRoot" && k !== "with" && k !== "under")) return "invalid approval: agreement must be {clausesRoot, with, under}";
+  if (!a || typeof a !== "object" || Array.isArray(a) || Object.keys(a).some((k) => !BINDING_FIELDS.includes(k)))
+    return "invalid approval: agreement must be {clausesRoot, with, withMandates, nonce, under}";
   if (typeof a.clausesRoot !== "string" || !HEX64.test(a.clausesRoot) || typeof a.under !== "string" || !HEX64.test(a.under)) return "invalid approval: clausesRoot and under must be fingerprints";
   if (!Array.isArray(a.with) || a.with.length < 1 || a.with.length > 9 || a.with.some((k) => typeof k !== "string" || !AGENT_KEY.test(k)) || new Set(a.with).size !== a.with.length || a.with.includes(b.agent))
     return "invalid approval: with must list 1 to 9 other agents' keys, once each";
-  const from = Date.parse(b.notBefore);
-  const to = Date.parse(b.notAfter);
+  if (a.withMandates !== undefined && (!Array.isArray(a.withMandates) || a.withMandates.length !== a.with.length || a.withMandates.some((x) => typeof x !== "string" || !HEX64.test(x))))
+    return "invalid approval: withMandates must give the mandate id of each agent in with, in the same order";
+  if (a.nonce !== undefined && (typeof a.nonce !== "string" || !APPROVAL_NONCE.test(a.nonce))) return "invalid approval: nonce must be 32 to 64 hex characters";
+  const from = parseTime(b.notBefore);
+  const to = parseTime(b.notAfter);
   if (!(to > from) || to - from > APPROVAL_MAX_DAYS * 86_400_000) return `invalid approval: it lasts at most ${APPROVAL_MAX_DAYS} days`;
   return null;
 }
 
 /**
  * Null if this mandate may be used for this agreement: always for an ordinary mandate; for an approval, only
- * if the agreement has exactly its clauses root and exactly its other parties.
+ * if the record has exactly its clauses root, its nonce, and exactly its other parties, each under exactly the
+ * mandate the owner saw. An approval without `nonce` or `withMandates` (format before 21/11/2026) allows nothing.
+ *
+ * With `general`, also checks the general mandate the approval extends (`under`): the mandates of the proof or
+ * offer, among which it must be, and `at` (the sealing time, or now): it must be an owner-signed mandate of the
+ * same owner and agent, itself no approval, valid at that time. Without it that check is left to the caller.
  */
-export function approvalProblem(m: Mandate, agreement: { clausesRoot: string; parties: Array<{ agent: PublicKey }> }): string | null {
+export function approvalProblem(
+  m: Mandate,
+  record: { clausesRoot: string; nonce?: string; parties: Array<{ agent: PublicKey; mandate?: string }> },
+  general?: { mandates: Mandate[]; at: string },
+): string | null {
   const a = m.body.type === "accord/mandate" ? m.body.agreement : undefined;
   if (!a) return null;
-  if (agreement.clausesRoot !== a.clausesRoot) return "the owner's approval is for other clauses";
-  const others = agreement.parties.map((p) => p.agent).filter((k) => k !== m.body.agent);
-  if (others.length !== a.with.length || new Set(others).size !== others.length || others.some((k) => !a.with.includes(k))) return "the owner's approval is for other parties";
+  if (record.clausesRoot !== a.clausesRoot) return "the owner's approval is for other clauses";
+  if (a.nonce === undefined || a.withMandates === undefined)
+    return "the owner's approval is of an older format, not bound to one record and to the other parties' mandates: ask the owner again";
+  if (record.nonce !== a.nonce) return "the owner's approval is for another record (another nonce): one approval allows one agreement only";
+  const others = record.parties.filter((p) => p.agent !== m.body.agent);
+  if (others.length !== a.with.length || new Set(others.map((p) => p.agent)).size !== others.length || others.some((p) => !a.with.includes(p.agent)))
+    return "the owner's approval is for other parties";
+  if (others.some((p) => p.mandate !== a.withMandates![a.with.indexOf(p.agent)]))
+    return "the owner's approval is for other parties: an agent signs under another mandate (another owner?) than the one the owner approved";
+  if (general) return generalProblem(m, a.under, general.mandates, general.at);
+  return null;
+}
+
+/** Why the general mandate an approval extends does not hold it up (see approvalProblem), or null. */
+function generalProblem(approval: Mandate, under: string, mandates: Mandate[], at: string): string | null {
+  const g = mandates.find((x) => !mandateProblem(x) && mandateId(x) === under);
+  if (!g) return "the general mandate the owner's approval extends is missing: an approval ends with its general mandate";
+  const gb = g.body;
+  const ab = approval.body;
+  if (gb.type !== "accord/mandate" || gb.agreement) return "the owner's approval extends something that is not a general mandate signed by the owner";
+  if (gb.agent !== ab.agent) return "the owner's approval extends the general mandate of another agent";
+  if (gb.owner.key !== ab.owner.key || gb.owner.domain !== ab.owner.domain || "domain" in gb.owner !== "domain" in ab.owner)
+    return "the owner's approval extends the general mandate of another owner";
+  if (!verifyMandateSignature(g)) return "the general mandate the owner's approval extends is not signed by its owner";
+  if (!withinValidity(g, at)) return `the general mandate the owner's approval extends was not valid at ${at}: an approval ends with its general mandate`;
   return null;
 }
 
@@ -321,7 +396,7 @@ export function chainProblem(m: Mandate): string | null {
       return "a link names another owner than the top of the chain";
     if (b.agent === above.body.agent) return "a link gives the mandate back to the same agent";
     if (!verifyValue(b, l.signature, b.issuer)) return "a link's signature is invalid";
-    if (Date.parse(b.notBefore) < Date.parse(above.body.notBefore) || Date.parse(b.notAfter) > Date.parse(above.body.notAfter))
+    if (parseTime(b.notBefore) < parseTime(above.body.notBefore) || parseTime(b.notAfter) > parseTime(above.body.notAfter))
       return "a link is valid outside the dates of the mandate above it";
     if (!atMost(b.maxAmount, above.body.maxAmount)) return "a link allows a bigger amount per agreement than the mandate above it";
     const aboveTotal = above.body.type === "symbolon/submandate" ? above.body.total : undefined;
@@ -352,16 +427,17 @@ export function taskCommitments(instruction: string, principalId: string, salt =
   };
 }
 
+/** True if the mandate is valid at this time (both read with parseTime: a time in another form is never within). */
 export function withinValidity(m: Mandate, isoTime: string): boolean {
-  const t = Date.parse(isoTime);
-  return t >= Date.parse(m.body.notBefore) && t <= Date.parse(m.body.notAfter);
+  const t = parseTime(isoTime);
+  return t >= parseTime(m.body.notBefore) && t <= parseTime(m.body.notAfter);
 }
 
 /** Compares two decimal strings exactly (up to 6 decimals). */
 export function amountLeq(a: string, b: string): boolean {
   const scale = (s: string) => {
     const m = /^(\d+)(?:\.(\d{1,6}))?$/.exec(s);
-    if (!m) throw new Error(`invalid amount ${s}`);
+    if (!m) throw new Error("invalid amount: a decimal string with up to 6 decimals is expected");
     return BigInt(m[1]) * 1_000_000n + BigInt((m[2] ?? "").padEnd(6, "0"));
   };
   return scale(a) <= scale(b);

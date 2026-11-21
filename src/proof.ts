@@ -5,7 +5,7 @@ import { verifyAnchor, type Anchor, type AnchorStatus, type BlockProvider } from
 import { fromHex } from "./bytes.js";
 import { clauseNamesProblem, verifyDisclosure, type Disclosure } from "./clauses.js";
 import { verifyValue, type PublicKey } from "./keys.js";
-import { amountLeq, approvalProblem, looksLikeAmount, mandateId, mandateProblem, spendingLimit, verifyMandateSignature, withinValidity, type Amount, type Mandate } from "./mandate.js";
+import { amountLeq, approvalProblem, looksLikeAmount, mandateId, mandateProblem, parseTime, spendingLimit, verifyMandateSignature, withinValidity, type Amount, type Mandate } from "./mandate.js";
 import { verifyConsistency, verifyInclusion } from "./merkle.js";
 import { entryHash, recordProblem, type SignedRecord } from "./record.js";
 import { entryLeaf, verifyHeadSignature, type Receipt } from "./register.js";
@@ -73,6 +73,23 @@ export interface Report {
 }
 
 const HEX64 = /^[0-9a-f]{64}$/;
+const AMOUNT_VALUE = /^\d{1,18}(?:\.\d{1,6})?$/;
+
+/**
+ * Why a value is not an amount as the "amount" clause must hold it, or null: exactly {value, currency}, nothing
+ * else (no quantity, unit, period or nested total that would change what the price means), value a decimal
+ * string (up to 18 digits and 6 decimals), currency three capital letters (ISO 4217).
+ */
+export function amountShapeProblem(v: unknown): string | null {
+  if (!v || typeof v !== "object" || Array.isArray(v)) return "the amount must be an object {value, currency}";
+  const keys = Object.keys(v);
+  if (keys.length !== 2 || !keys.includes("value") || !keys.includes("currency"))
+    return `the amount must be exactly {value, currency}, nothing else (found: ${keys.slice(0, 5).join(", ")})`;
+  const a = v as Amount;
+  if (typeof a.value !== "string" || !AMOUNT_VALUE.test(a.value)) return "the amount value must be a decimal string such as \"123.45\"";
+  if (typeof a.currency !== "string" || !/^[A-Z]{3}$/.test(a.currency)) return "the amount currency must be three capital letters (ISO 4217)";
+  return null;
+}
 
 /** Shape of the parts of a proof file the verifier reads, so a malformed file gives "invalid", not an error. */
 function bundleProblem(b: ProofBundle): string | null {
@@ -83,7 +100,7 @@ function bundleProblem(b: ProofBundle): string | null {
   const r = b.receipt;
   if (!r || typeof r !== "object" || typeof r.entry !== "string" || !Number.isInteger(r.index) || r.index < 0 || !Array.isArray(r.path)) return "invalid receipt";
   const h = r.head;
-  if (!h || typeof h !== "object" || typeof h.log !== "string" || !Number.isInteger(h.size) || typeof h.root !== "string" || !HEX64.test(h.root) || typeof h.time !== "string" || Number.isNaN(Date.parse(h.time)))
+  if (!h || typeof h !== "object" || typeof h.log !== "string" || !Number.isInteger(h.size) || typeof h.root !== "string" || !HEX64.test(h.root) || Number.isNaN(parseTime(h.time)))
     return "invalid register head";
   for (const d of b.disclosures) if (!d || typeof d !== "object" || typeof d.name !== "string" || !Number.isInteger(d.index) || !Array.isArray(d.path)) return "invalid disclosure";
   if (b.anchor !== undefined) {
@@ -142,13 +159,21 @@ export async function verifyProof(b: ProofBundle, opts: VerifyOptions): Promise<
     add(`mandate of agent ${who} signed by the owner key it names (${domain === undefined ? "no domain" : `claims ${domain}`})`, verifyMandateSignature(m));
     add(`mandate of agent ${who} names this agent`, m.body.agent === p.agent);
     if (m.body.type === "accord/mandate" && m.body.agreement) {
-      const bad = approvalProblem(m, rec.body);
-      add(`owner's approval of agent ${who} is for this very agreement`, !bad, bad ?? "approved by the owner for these clauses and these parties only");
+      // Bound to this record (nonce), these clauses, these parties under these mandates, and held up by its
+      // general mandate, shown in the proof and valid when sealed.
+      const bad = approvalProblem(m, rec.body, { mandates: b.mandates, at: head.time });
+      add(
+        `owner's approval of agent ${who} is for this very agreement`,
+        !bad,
+        bad ?? "approved by the owner for this record only, these clauses and these parties, under a general mandate valid when sealed",
+      );
     }
     add(`mandate of agent ${who} valid when sealed`, withinValidity(m, head.time), `sealed ${head.time}`);
+    // Strict UTC times only: a creation time read in the verifier's own time zone would move with it.
     add(
       `record of agent ${who} not dated after sealing`,
-      Date.parse(rec.body.createdAt) <= Date.parse(head.time) + clockSkew,
+      parseTime(rec.body.createdAt) <= parseTime(head.time) + clockSkew,
+      Number.isNaN(parseTime(rec.body.createdAt)) ? "the record's createdAt is not a UTC time YYYY-MM-DDTHH:MM:SS(.sss)Z" : undefined,
     );
     levels[p.agent] = "unverified";
     let keys: PublicKey[] | null = null;
@@ -233,10 +258,23 @@ export async function verifyProof(b: ProofBundle, opts: VerifyOptions): Promise<
   // the limit could not be checked: that is a gap, never a pass.
   const amount = disclosed["amount"] as Amount | undefined;
   const limited = rec.body.parties.some((p) => { const m = mandateOf(p.mandate); return !!m && !!spendingLimit(m); });
-  if (limited)
+  if (limited) {
     for (const [name, value] of Object.entries(disclosed))
       if (name !== "amount" && looksLikeAmount(value))
         add(`clause "${name}" holds no hidden price`, false, "a mandate has a spending limit: the price may appear only in the \"amount\" clause");
+    // The amount is exactly {value, currency}: a quantity, a period or a nested total next to it would change
+    // what the price means while the limit check reads only value and currency.
+    if (amount !== undefined) {
+      const bad = amountShapeProblem(amount);
+      add(`clause "amount" is exactly {value, currency}`, !bad, bad ?? undefined);
+    }
+    // A price can hide in a clause nobody sees: under a limit, every clause must be disclosed to check it.
+    const shown = Object.keys(disclosed).length;
+    if (shown < rec.body.clauseCount)
+      gaps.push(
+        `amount not disclosed in full: ${rec.body.clauseCount - shown} of ${rec.body.clauseCount} clauses are not disclosed, and under a mandate with a spending limit a price in any of them could not be checked against it`,
+      );
+  }
   for (const p of rec.body.parties) {
     const lm = mandateOf(p.mandate);
     const max = lm ? spendingLimit(lm) : undefined;
@@ -247,7 +285,7 @@ export async function verifyProof(b: ProofBundle, opts: VerifyOptions): Promise<
     }
     let ok = false;
     try {
-      ok = !!amount && typeof amount === "object" && max.currency === amount.currency && amountLeq(amount.value, max.value);
+      ok = amountShapeProblem(amount) === null && max.currency === amount.currency && amountLeq(amount.value, max.value);
     } catch {
       ok = false;
     }

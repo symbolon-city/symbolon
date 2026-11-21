@@ -65,7 +65,7 @@ test("R1: an honest priced agreement still goes through, and a proof shows a hid
   const offer = await alice.propose({ counterparty: bob.myMandate(), clauses: { object: "server", amount: { value: "900.00", currency: "EUR" } } });
   const { entry, confirmation } = await bob.accept(offer);
   await alice.confirm(confirmation);
-  const proof = await alice.createProof(entry, ["amount"]);
+  const proof = await alice.createProof(entry, ["object", "amount"]);
   const ok = await alice.verify(proof);
   assert.equal(ok.verdict, "valid", JSON.stringify([ok.gaps, ok.checks.filter((c) => !c.ok)]));
 

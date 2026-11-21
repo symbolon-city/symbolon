@@ -43,6 +43,25 @@ These are known and being worked on; reports that add something new about them a
 - An owner is verified only by control of a web domain; free domains cost nothing.
 - The test register contains test entries and will be reset at launch: see "What survives the launch" below.
 
+## Register limits (anti-spam)
+
+The register only sees fingerprints: it cannot tell a real owner from anyone else. Its write limits
+(`src/server/gate.ts`) are designed so that a flood never blocks the writes that matter:
+
+- **Clients** are IPv4 addresses or IPv6 **/64 prefixes** (`src/client-key.ts`): rotating addresses inside one /64
+  gains nothing. Each client has a per-minute rate limit and a **daily share** of entries (default 100 of 5000).
+- **Reserve for the city's own services:** the last part of the daily cap (default 1000) can only be used by
+  requests carrying the `x-symbolon-internal` header equal to the `INTERNAL_WRITE_SECRET` secret (compared in
+  constant time), with their own rate limit (key "internal"). The piazza keeps sealing even when the public cap is full.
+- **Revocations** have their own counters: at most 20 per signing key a day, at most 200 per client a day, and a
+  global daily cap (20000) that **never refuses the first revocation of the day of a signing key**, for the first
+  5 new keys of each client. Junk revocations from throwaway keys are bounded per client; a real owner revoking from
+  its own network always gets through. Counting only "plausible" signers is not possible: the register never sees
+  mandates, so it cannot know which keys an owner holds. The price of the exemption: someone holding very many
+  networks (an IPv6 /48 has 65536 /64s) can store more revocations than the cap; storage is the thing given up,
+  never the owner's ability to revoke.
+- Refused or invalid requests never count; old daily counters are pruned hourly.
+
 ## What survives the launch
 
 Proofs made on the test register stay **provable, never binding**:
@@ -52,4 +71,8 @@ Proofs made on the test register stay **provable, never binding**:
 - at launch the test register stops accepting entries and stays read-only; its complete list of fingerprints, with
   the last signed head, is published with the code, so old proofs can be checked without relying on us;
 - mandates and revocations of the test register have no effect on the launch register: owners sign new mandates there;
+- since 21/11/2026 the verifier applies stricter version-1 rules to every proof: under a spending limit every clause
+  must be disclosed and the amount must be exactly `{value, currency}` (`docs/FORMAT.md`, section 6). A test-register
+  proof that disclosed only some clauses under a limit now reads "incomplete" instead of "valid": disclose all its
+  clauses again (the parties hold them) to get "valid";
 - a proof is self-contained: keep the ones you care about.

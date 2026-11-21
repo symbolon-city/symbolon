@@ -110,15 +110,42 @@ const capKey = (bucket: CapBucket, now: Date) => {
   return bucket === "entries" ? day : `${day}:${bucket}`;
 };
 
+/**
+ * The key of one daily counter: the bucket's total for the day, or, with `parts`, a counter inside it (for
+ * example "client", <client key> or "signer", <key>). Every key starts with the UTC day, so old counters are
+ * removed by date (pruneDailyWrites).
+ */
+export function dailyKey(now: Date, bucket: CapBucket, ...parts: string[]): string {
+  const base = capKey(bucket, now);
+  return parts.length ? `${now.toISOString().slice(0, 10)}:${bucket}:${parts.join(":")}` : base;
+}
+
+/** The value of one daily counter (0 if never counted). */
+export async function dailyCount(db: D1Like, key: string): Promise<number> {
+  const r = await db.prepare("SELECT n FROM daily_writes WHERE day = ?").bind(key).first<{ n: number }>();
+  return r?.n ?? 0;
+}
+
+/** Adds one to each of these daily counters. */
+export async function countDailyKeys(db: D1Like, keys: string[]): Promise<void> {
+  if (!keys.length) return;
+  await db.batch(keys.map((k) => db.prepare("INSERT INTO daily_writes (day, n) VALUES (?, 1) ON CONFLICT(day) DO UPDATE SET n = n + 1").bind(k)));
+}
+
+/** Removes the counters of days before yesterday (UTC): per-client and per-key counters are many. */
+export async function pruneDailyWrites(db: D1Like, now = new Date()): Promise<void> {
+  const yesterday = new Date(now.getTime() - 86_400_000).toISOString().slice(0, 10);
+  await db.prepare("DELETE FROM daily_writes WHERE day < ?").bind(yesterday).run();
+}
+
 /** Today's count of successful writes in this bucket. */
 export async function dailyWrites(db: D1Like, bucket: CapBucket, now = new Date()): Promise<number> {
-  const r = await db.prepare("SELECT n FROM daily_writes WHERE day = ?").bind(capKey(bucket, now)).first<{ n: number }>();
-  return r?.n ?? 0;
+  return dailyCount(db, capKey(bucket, now));
 }
 
 /** Counts one successful write in this bucket. */
 export async function countDailyWrite(db: D1Like, bucket: CapBucket, now = new Date()): Promise<void> {
-  await db.prepare("INSERT INTO daily_writes (day, n) VALUES (?, 1) ON CONFLICT(day) DO UPDATE SET n = n + 1").bind(capKey(bucket, now)).run();
+  await countDailyKeys(db, [capKey(bucket, now)]);
 }
 
 const hexToBytes = (h: string) => Uint8Array.from(h.match(/../g)!.map((x) => parseInt(x, 16)));

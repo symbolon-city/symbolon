@@ -19,9 +19,14 @@ import { scenario } from "./helpers.js";
 
 const failed = (r: { checks: { name: string; ok: boolean }[] }) => r.checks.filter((c) => !c.ok).map((c) => c.name);
 
-test("a correctly sealed agreement verifies, revealing only the delivery date and the amount", async () => {
+test("a correctly sealed agreement verifies, every clause revealed (under a spending limit, B7 of 21/11)", async () => {
   const s = await scenario();
-  const r = await verifyProof(s.proof([disclose(s.opened, "delivery"), disclose(s.opened, "amount")]), s.verifyOpts);
+  // Only the delivery date and the amount: under the buyer's limit a price could hide in the other two clauses.
+  const some = await verifyProof(s.proof([disclose(s.opened, "delivery"), disclose(s.opened, "amount")]), s.verifyOpts);
+  assert.deepEqual(failed(some), []);
+  assert.equal(some.verdict, "incomplete");
+  assert.match(some.gaps.join(" "), /2 of 4 clauses are not disclosed/);
+  const r = await verifyProof(s.proof(s.opened.clauses.map((c) => disclose(s.opened, c.name))), s.verifyOpts);
   assert.deepEqual(failed(r), []);
   assert.deepEqual(r.gaps, []);
   assert.ok(r.valid);
@@ -36,7 +41,7 @@ test("hiding the amount when a mandate has a limit gives 'incomplete', never 'va
   assert.deepEqual(failed(r), []);
   assert.equal(r.valid, false);
   assert.equal(r.verdict, "incomplete");
-  assert.equal(r.gaps.length, 1);
+  assert.ok(r.gaps.length >= 1);
   assert.match(r.gaps[0], /amount not disclosed/);
 });
 
@@ -57,7 +62,7 @@ test("a changed clause is rejected", async () => {
 
 test("amount within the buyer's mandate passes, amount above fails", async () => {
   const s = await scenario();
-  const ok = await verifyProof(s.proof([disclose(s.opened, "amount")]), s.verifyOpts);
+  const ok = await verifyProof(s.proof(s.opened.clauses.map((c) => disclose(s.opened, c.name))), s.verifyOpts);
   assert.ok(ok.valid);
 
   // Same parties, new agreement above the €50,000 limit.

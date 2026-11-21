@@ -27,30 +27,30 @@ test("launch: the test register is a known register, marked as a test", () => {
 test("launch: a proof of a test register stays valid and is labelled a test; a launch register is not", async () => {
   const s = await scenario();
   await withKnown({ url: "https://old.example", key: s.register.publicKey, name: "Old test register", since: "2026-11-14", test: true }, async () => {
-    const report = await verifyProof(s.proof([disclose(s.opened, "amount")]), s.verifyOpts);
+    const report = await verifyProof(s.proof(s.opened.clauses.map((c) => disclose(s.opened, c.name))), s.verifyOpts);
     assert.equal(report.valid, true);
     assert.deepEqual(report.register, { key: s.register.publicKey, name: "Old test register", test: true });
     const label = report.checks.find((c) => c.name === "register is a test register");
     assert.ok(label?.ok && /never binding commitments/.test(label.detail ?? ""));
   });
   await withKnown({ url: "https://launch.example", key: s.register.publicKey, name: "Launch register", since: "2027-01-01" }, async () => {
-    const report = await verifyProof(s.proof([disclose(s.opened, "amount")]), s.verifyOpts);
+    const report = await verifyProof(s.proof(s.opened.clauses.map((c) => disclose(s.opened, c.name))), s.verifyOpts);
     assert.deepEqual(report.register, { key: s.register.publicKey, name: "Launch register" });
     assert.equal(report.checks.some((c) => c.name === "register is a test register"), false);
   });
   // A register nobody fixed in the code is not named at all.
-  assert.equal((await verifyProof(s.proof([disclose(s.opened, "amount")]), s.verifyOpts)).register, undefined);
+  assert.equal((await verifyProof(s.proof(s.opened.clauses.map((c) => disclose(s.opened, c.name))), s.verifyOpts)).register, undefined);
 });
 
 test("launch: wallets and the door trust every known register, so old proofs verify against a new register", async () => {
   const s = await scenario();
   await withKnown({ url: "https://old.example", key: s.register.publicKey, name: "Old test register", since: "2026-11-14", test: true }, async () => {
     // A verifier connected to another register (the launch one) still accepts the old register's proof.
-    const report = await verifyProof(s.proof([disclose(s.opened, "amount")]), { ...s.verifyOpts, trustedLogs: ["ed25519:" + "1".repeat(64), ...knownRegisterKeys()] });
+    const report = await verifyProof(s.proof(s.opened.clauses.map((c) => disclose(s.opened, c.name))), { ...s.verifyOpts, trustedLogs: ["ed25519:" + "1".repeat(64), ...knownRegisterKeys()] });
     assert.equal(report.valid, true);
     assert.equal(report.register?.test, true);
   });
   // Without it being known, the same proof is refused by that verifier.
-  const report = await verifyProof(s.proof([disclose(s.opened, "amount")]), { ...s.verifyOpts, trustedLogs: ["ed25519:" + "1".repeat(64)] });
+  const report = await verifyProof(s.proof(s.opened.clauses.map((c) => disclose(s.opened, c.name))), { ...s.verifyOpts, trustedLogs: ["ed25519:" + "1".repeat(64)] });
   assert.equal(report.valid, false);
 });

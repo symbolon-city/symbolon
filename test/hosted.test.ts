@@ -165,7 +165,7 @@ test("hosted: Marta connects her assistant with Face ID, signs her mandate on th
   const accepted = await museum("symbolon_accept_agreement", { offer });
   assert.equal(accepted.counterparty.level, "key");
   await first.call("symbolon_confirm_agreement", { confirmation: accepted.confirmation });
-  const proof = await first.call("symbolon_create_proof", { entry: accepted.entry, reveal: ["object", "amount"] });
+  const proof = await first.call("symbolon_create_proof", { entry: accepted.entry, reveal: ["object", "amount", "delivery"] });
   const report = await museum("symbolon_verify_proof", { proof });
   assert.equal(report.valid, true);
 
