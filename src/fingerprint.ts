@@ -4,10 +4,10 @@
 // difference gives a different fingerprint, so both sides must use the same method.
 
 import { utf8 } from "./bytes.js";
-import { canonical } from "./canonical.js";
+import { canonical, canonicalRfc8785 } from "./canonical.js";
 import { sha256Hex } from "./hash.js";
 
-export type FingerprintMethod = "sha256-utf8" | "sha256-jcs";
+export type FingerprintMethod = "sha256-utf8" | "sha256-jcs" | "sha256-rfc8785";
 
 const LONE_SURROGATE = /[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/;
 
@@ -29,4 +29,11 @@ export function fingerprintJson(value: unknown): { fingerprint: string; method: 
   requireWellFormed(value);
   const c = canonical(value);
   return { fingerprint: sha256Hex(utf8(c)), method: "sha256-jcs", canonical: c };
+}
+
+/** Full RFC 8785: for JSON written by others, decimal numbers allowed (spec: docs/FORMAT.md, section 2). */
+export function fingerprintRfc8785(value: unknown): { fingerprint: string; method: FingerprintMethod; canonical: string } {
+  requireWellFormed(value);
+  const c = canonicalRfc8785(value);
+  return { fingerprint: sha256Hex(utf8(c)), method: "sha256-rfc8785", canonical: c };
 }

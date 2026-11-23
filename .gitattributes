@@ -1,0 +1,2 @@
+# Texts whose fingerprint is fixed must keep the same bytes on every computer (no CRLF on Windows).
+docs/CHARTER-0.1.md text eol=lf

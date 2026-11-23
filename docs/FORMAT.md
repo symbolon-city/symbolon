@@ -46,6 +46,7 @@ tool `symbolon_fingerprint`):
 |---|---|---|
 | `sha256-utf8` | the exact UTF-8 bytes of a text | documents, messages: every space and line break counts |
 | `sha256-jcs` | the canonical form (section 1) of a JSON value | structured data: key order and spacing do not matter |
+| `sha256-rfc8785` | full RFC 8785 (JCS) form of a JSON value: like section 1, but numbers of any kind are allowed and written with the ECMAScript number-to-string rule (`0.5`, `1e+21`, `-0` becomes `0`) | JSON written by others, e.g. MCP tool definitions in the change book (prototype, not yet a door tool) |
 
 Keep the content exactly as fingerprinted (for JSON, keep the canonical text too).
 **Only the fingerprint goes to the register, never the content.**
