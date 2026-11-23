@@ -10,6 +10,7 @@ import type { Transport } from "@modelcontextprotocol/sdk/shared/transport.js";
 import { z } from "zod";
 import type { Json } from "../canonical.js";
 import { fingerprintRfc8785 } from "../fingerprint.js";
+import { DigestReject, digestToolList, type ToolListDigest } from "./mcp-digest.js";
 
 export const READER_NAME = "SymbolonBook";
 export const READER_VERSION = "0.1";
@@ -36,6 +37,8 @@ export interface McpFingerprints {
   tools: Record<string, string>;
   prompts: Record<string, string>;
   resourceTemplates: Record<string, string>;
+  /** The tools as mcp-tool-digest/v1-draft "full" would digest them (what an MCP client would pin), or why it refuses. */
+  mcpToolDigest?: ToolListDigest | { reject: string };
 }
 
 export interface McpObservation {
@@ -92,7 +95,14 @@ export function mcpFingerprints(o: Pick<McpObservation, "instructions" | "tools"
   const prompts = fingerprintMap(o.prompts ?? [], "name");
   const resourceTemplates = fingerprintMap(o.resourceTemplates ?? [], "uriTemplate");
   const manifest = fingerprintRfc8785({ instructions, tools, prompts, resourceTemplates }).fingerprint;
-  return { manifest, instructions, tools, prompts, resourceTemplates };
+  let mcpToolDigest: ToolListDigest | { reject: string };
+  try {
+    mcpToolDigest = digestToolList({ tools: o.tools ?? [] }, "full");
+  } catch (e) {
+    if (!(e instanceof DigestReject)) throw e;
+    mcpToolDigest = { reject: e.code };
+  }
+  return { manifest, instructions, tools, prompts, resourceTemplates, mcpToolDigest };
 }
 
 const AnyResult = z.object({}).passthrough();

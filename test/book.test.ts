@@ -215,3 +215,38 @@ test("runDay: keeps a copy only when something changed, writes the day with a Me
   const saved = JSON.parse(await readFile(join(dataDir, "days", "2026-11-25.json"), "utf8"));
   assert.equal(saved.root, d3.root);
 });
+
+// ---- mcp-tool-digest/v1-draft (SEP-3452 discussion): every published vector ----
+
+import { readdirSync, readFileSync } from "node:fs";
+import { DigestReject, digestToolList, digestToolListRaw, type DigestProfile } from "../src/book/mcp-digest.js";
+
+test("mcp-tool-digest/v1-draft: same answers as every vector of purysho/mcp-digest-vectors, all three profiles", () => {
+  const dir = join("test", "fixtures", "mcp-digest-vectors");
+  const files = readdirSync(dir).filter((f) => f.endsWith(".json"));
+  assert.equal(files.length, 45);
+  let checked = 0;
+  for (const f of files) {
+    const v = JSON.parse(readFileSync(join(dir, f), "utf8"));
+    for (const profile of ["desc", "four-field", "full"] as DigestProfile[]) {
+      for (const side of ["before", "after"]) {
+        const raw: Uint8Array = typeof v[side] === "string" ? new TextEncoder().encode(v[side]) : new Uint8Array(Buffer.from(v[`${side}_b64`], "base64"));
+        const want = v.known_answers[profile][side];
+        if (want.reject) {
+          assert.throws(() => digestToolListRaw(raw, profile), DigestReject, `${v.id} ${profile} ${side} must be rejected`);
+        } else {
+          const got = digestToolListRaw(raw, profile);
+          assert.equal(got.set, want.set, `${v.id} ${profile} ${side}`);
+          assert.deepEqual(got.tools, want.tools, `${v.id} ${profile} ${side}`);
+        }
+        checked++;
+      }
+    }
+  }
+  assert.equal(checked, 45 * 3 * 2);
+});
+
+test("the reader stores the draft digest next to its own fingerprints", async () => {
+  const { obs } = await observe({ description: "Search the web" });
+  assert.deepEqual(obs.fingerprints!.mcpToolDigest, digestToolList({ tools: obs.tools }, "full"));
+});
