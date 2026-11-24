@@ -52,7 +52,7 @@ try {
   const mandate = createMandate(owner, {
     ownerDomain: "prova.example",
     agent: agentKey,
-    scope: "prova tecnica del notaio online",
+    scope: "prova tecnica del registro online",
     notBefore: now.toISOString(),
     notAfter: new Date(now.getTime() + 86_400_000).toISOString(),
     charter: "accord-charter/0.1",
@@ -61,7 +61,7 @@ try {
   console.log("3. Delega del padrone (di prova) installata");
 
   const sealed = await call("symbolon_seal_action", {
-    instruction: "Prova: sigilla la prima azione sul notaio online",
+    instruction: "Prova: sigilla la prima azione sul registro online",
     action: "Azione di prova sigillata dalla porta MCP",
   });
   const entry: string = sealed.entry ?? JSON.stringify(sealed).match(/[0-9a-f]{64}/)?.[0];

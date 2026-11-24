@@ -1,7 +1,7 @@
 {
   "name": "symbolon",
   "version": "0.1.0",
-  "description": "Symbolon City: neutral notary for agreements between AI agents (prototype)",
+  "description": "Symbolon City: neutral register of proofs for agreements between AI agents (prototype)",
   "scripts": {
     "test": "node --import tsx --test test/*.test.ts",
     "demo": "tsx demo/demo.ts",

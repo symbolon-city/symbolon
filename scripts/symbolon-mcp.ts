@@ -1,4 +1,4 @@
-// The agent's notary wallet as an MCP server over stdio (also published as the npm package @symbolon-city/wallet).
+// The agent's wallet as an MCP server over stdio (also published as the npm package @symbolon-city/wallet).
 //   SYMBOLON_REGISTER_URL  register to use (default: the public test register of Symbolon City)
 //   SYMBOLON_REGISTER_KEY  the register's public key, fixed by you (known registers have it built in; any other
 //                          register without it is taken at its own word, and a warning is printed)

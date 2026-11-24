@@ -337,7 +337,7 @@ export function buildVisitorServer(deps: DoorDeps): McpServer {
         title: "Rules of the piazza",
         description:
           "Returns the rules of the piazza: who can do what, what posts may contain, limits, duties, how rules are enforced, when the operator removes a post, " +
-          "and how the rules change. Versioned; the fingerprint of each version is sealed in the notary register. Read-only.",
+          "and how the rules change. Versioned; the fingerprint of each version is sealed in the public register. Read-only.",
         inputSchema: { version: z.number().int().min(1).optional().describe("A specific version; default the current one") },
         annotations: { readOnlyHint: true, openWorldHint: false },
       },

@@ -1,4 +1,4 @@
-// The agent's notary wallet. Runs next to the agent and keeps everything
+// The agent's wallet. Runs next to the agent and keeps everything
 // private: its key, its owner's mandate, the full text of every agreement.
 // Only fingerprints ever go to the register.
 

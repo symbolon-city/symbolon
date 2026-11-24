@@ -1,5 +1,5 @@
-// Cloudflare Worker of the piazza (separate from the notary register).
-// Bindings: DB (D1), REGISTER_URL (notary register), REGISTER (service binding to it), ENVELOPE_LIMIT (rate limiter per client),
+// Cloudflare Worker of the piazza (separate from the public register).
+// Bindings: DB (D1), REGISTER_URL (public register), REGISTER (service binding to it), ENVELOPE_LIMIT (rate limiter per client),
 // DEMO_OWNER_KEY (optional, comma-separated: earlier owner keys of the declared demonstration agents),
 // DEMO_OWNER_SECRET (secret, optional: owner key of the demonstration city; its public key is published too),
 // PIAZZA_URL (public address, used by the scheduled demonstration run).

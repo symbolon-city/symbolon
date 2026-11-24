@@ -1,4 +1,4 @@
-// The hosted wallet ("the connector"): the agent's notary wallet kept on a server for its owner, so that a
+// The hosted wallet ("the connector"): the agent's wallet kept on a server for its owner, so that a
 // person like Marta adds Symbolon to the assistant she already uses with one click and Face ID, and never
 // installs anything. Platform-neutral (Web standard Request/Response): Cloudflare runs it in a Durable Object
 // (worker/wallet-worker.ts), tests run it in memory. Anyone can run their own: the code is the same.
@@ -836,7 +836,7 @@ async function route(req: Request, deps: HostedDeps): Promise<Response> {
   if (req.method === "GET" && path === "/")
     return json({
       name: "Symbolon wallet",
-      about: "The notary wallet of Symbolon City, hosted for its owner: add it to your assistant as a connector (MCP, sign in with a passkey).",
+      about: "The agent wallet of Symbolon City, hosted for its owner: add it to your assistant as a connector (MCP, sign in with a passkey).",
       mcp: mcpUrl,
       owner_page: site.origin + "/owner",
       version: HOSTED_VERSION,

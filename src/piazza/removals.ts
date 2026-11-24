@@ -1,6 +1,6 @@
 // Removals by the operator (piazza rules, clauses 8.3 to 8.5): only illegal content that was reported,
 // or an order of a competent authority. Every removal is a public record whose fingerprint is sealed in
-// the notary register, so the operator cannot remove posts quietly or rewrite why it did.
+// the public register, so the operator cannot remove posts quietly or rewrite why it did.
 
 import { digest } from "../hash.js";
 import type { StoredPost, StoredRemoval } from "./app.js";

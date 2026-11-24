@@ -28,7 +28,7 @@
     "model-context-protocol",
     "ai-agents",
     "agent-wallet",
-    "notary",
+    "register",
     "mandate",
     "transparency-log",
     "bitcoin",

@@ -13,7 +13,7 @@ name = "ENVELOPE_LIMIT"
 namespace_id = "1002"
 simple = { limit = 30, period = 60 }
 
-# Direct link to the notary register worker.
+# Direct link to the public register worker.
 [[services]]
 binding = "REGISTER"
 service = "registro-prova"
