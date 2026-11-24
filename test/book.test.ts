@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, readFile, readdir } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { test } from "node:test";
@@ -342,4 +342,52 @@ test("book day: anchored with OpenTimestamps, root checked from its items, snaps
   // and an anchored day is never read again
   await assert.rejects(runDay(lists, { dataDir, now: () => new Date("2026-11-24T15:00:00Z"), readMcp }), /already anchored/);
   assert.equal(await readFile(path, "utf8"), original);
+});
+
+// ---- not to be read: opt-out list and robots.txt ----
+
+import { robotsDisallow } from "../src/book/optout.js";
+import { buildSite } from "../src/book/site.js";
+
+test("robots.txt: only a group naming SymbolonBook counts; longest rule wins", () => {
+  assert.equal(robotsDisallow("User-agent: *\nDisallow: /", "/mcp"), false, "generic groups are not applied");
+  assert.equal(robotsDisallow("User-agent: SymbolonBook\nDisallow: /", "/mcp"), true);
+  assert.equal(robotsDisallow("user-agent: symbolonbook\ndisallow: /private", "/mcp"), false);
+  assert.equal(robotsDisallow("User-agent: Googlebot\nUser-agent: SymbolonBook\nDisallow: /mcp # no\n", "/mcp"), true);
+  assert.equal(robotsDisallow("User-agent: SymbolonBook\nDisallow: /\nAllow: /mcp", "/mcp"), false);
+  assert.equal(robotsDisallow("User-agent: SymbolonBook\nDisallow:\n", "/mcp"), false, "empty Disallow allows everything");
+});
+
+test("opted out: not read, no public page, and the day says why", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "book-optout-"));
+  const outDir = await mkdtemp(join(tmpdir(), "book-optout-site-"));
+  const lists: Lists = {
+    createdAt: "",
+    criteria: {},
+    mcp: [
+      { id: "s/keep", url: "https://keep.example/mcp", transport: "streamable-http" },
+      { id: "s/listed", url: "https://listed.example/mcp", transport: "streamable-http" },
+      { id: "s/robots", url: "https://robots.example/mcp", transport: "streamable-http" },
+    ],
+    skills: [],
+  };
+  await writeFile(join(dataDir, "lists.json"), JSON.stringify(lists));
+  const read: string[] = [];
+  const readMcp = async (t: { id: string }) => (read.push(t.id), { ...(await observe({ description: "Search" })).obs, id: t.id });
+  await mkdir(dataDir, { recursive: true });
+  await writeFile(join(dataDir, "opt-out.json"), JSON.stringify({ entries: [{ value: "host:listed.example", since: "2026-11-25" }] }));
+  const day = await runDay(lists, { dataDir, now: () => new Date("2026-11-25T09:00:00Z"), readMcp, robots: async (u) => u.includes("robots.example") });
+  assert.deepEqual(read, ["s/keep"]);
+  assert.deepEqual(day.items.map((i) => [i.id, i.status, i.error ?? ""]), [
+    ["s/keep", "ok", ""],
+    ["s/listed", "opted-out", "opted out (opt-out list)"],
+    ["s/robots", "opted-out", "opted out (robots.txt)"],
+  ]);
+  assert.equal(day.leaves, 1);
+  await buildSite(dataDir, outDir);
+  const pages = (await readdir(join(outDir, "items"))).filter((f) => f.endsWith(".html"));
+  assert.equal(pages.length, 1);
+  assert.match(pages[0], /^s_keep-/);
+  const about = await readFile(join(outDir, "about.html"), "utf8");
+  assert.ok(about.includes("User-agent: SymbolonBook") && about.includes("dev@symboloncity.com"));
 });

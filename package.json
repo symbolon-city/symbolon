@@ -28,7 +28,8 @@
     "book:crawl": "tsx scripts/book-crawl.ts",
     "book:report": "tsx scripts/book-report.ts",
     "book:verify": "tsx scripts/book-verify.ts",
-    "book:site": "tsx scripts/book-site.ts"
+    "book:site": "tsx scripts/book-site.ts",
+    "a2a:census": "tsx scripts/a2a-census.ts"
   },
   "license": "Apache-2.0",
   "dependencies": {

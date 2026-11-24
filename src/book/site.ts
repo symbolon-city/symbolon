@@ -12,6 +12,9 @@ import type { DaySummary, Lists } from "./crawl.js";
 import type { McpObservation } from "./mcp-reader.js";
 import { fileName } from "./names.js";
 import type { SkillObservation } from "./skills-reader.js";
+import { BOOK_ROBOT, optedOut, type OptOutList } from "./optout.js";
+
+export const CONTACT = "dev@symboloncity.com";
 
 export const ITEM_VERSION = "symbolon-book/item/1";
 const CONTEXT = 280;
@@ -157,7 +160,13 @@ export async function buildSite(dataDir: string, outDir: string): Promise<SiteRe
   await mkdir(join(outDir, "days"), { recursive: true });
   for (const f of await readdir(join(dataDir, "days"))) if (/\.(json|ots)$/.test(f)) await copyFile(join(dataDir, "days", f), join(outDir, "days", f));
 
-  const targets = [...lists.mcp.map((t) => ({ id: t.id, kind: "mcp-server" as const, url: t.url })), ...lists.skills.map((t) => ({ id: t.id, kind: "skill" as const, url: undefined }))];
+  // Who asked not to be read has no public page, including what was read before the request.
+  const optOut = await readJson<OptOutList>(join(dataDir, "opt-out.json"));
+  const lastStatus = (id: string) => days.at(-1)?.items.find((x) => x.id === id)?.status;
+  const targets = [
+    ...lists.mcp.map((t) => ({ id: t.id, kind: "mcp-server" as const, url: t.url as string | undefined })),
+    ...lists.skills.map((t) => ({ id: t.id, kind: "skill" as const, url: undefined as string | undefined })),
+  ].filter((t) => !optedOut(optOut, t.id, t.url) && lastStatus(t.id) !== "opted-out");
   const index: { id: string; kind: string; status?: string; lastChange?: string; lastModelText?: string; page: string }[] = [];
   const recent: { date: string; id: string; page: string; change: Change }[] = [];
   let totalChanges = 0;
@@ -227,7 +236,7 @@ export async function buildSite(dataDir: string, outDir: string): Promise<SiteRe
   );
   const shownChanges = recent.filter((r) => r.change.kind !== "status").slice(0, 200);
   const body =
-    `<h1>The change book</h1><p class="note">${esc(NOTE)}</p>` +
+    `<h1>The change book</h1><p class="note">${esc(NOTE)} <a href="about.html">About, contact and opting out</a>.</p>` +
     `<p>${targets.length} items on the shelves (${lists.mcp.length} MCP servers, ${lists.skills.length} skills), read every day since ${esc(days[0]?.date ?? "-")}. ` +
     `Last reading ${esc(lastDay?.date ?? "-")}: ${counts("ok")} readable, ${counts("auth-required")} need an account, ${counts("unreachable") + counts("error")} down or broken.</p>` +
     `<h2>Latest changes</h2>${shownChanges.length ? `<table><tr><th>Day</th><th>Item</th><th>What</th><th>Kind</th></tr>${shownChanges
@@ -245,5 +254,26 @@ export async function buildSite(dataDir: string, outDir: string): Promise<SiteRe
       .map((x) => `<tr><td><a href="${x.page}">${esc(x.id)}</a></td><td>${x.kind === "mcp-server" ? "server" : "skill"}</td><td>${esc(x.status ?? "-")}</td><td>${esc(x.lastChange ?? "-")}</td></tr>`)
       .join("")}</table>`;
   await writeFile(join(outDir, "index.html"), page("The change book · Symbolon City", body), "utf8");
+  await writeFile(join(outDir, "about.html"), page("About the change book · Symbolon City", aboutBody(lists)), "utf8");
   return { items: targets.length, days: days.length, changes: totalChanges };
+}
+
+function aboutBody(lists: Lists): string {
+  return (
+    `<p class="muted"><a href="index.html">The change book</a></p><h1>About the change book</h1>` +
+    `<h2>What it is</h2><p>A public memory of what MCP servers and agent skills showed to AI agents on each day, and of when that changed. ` +
+    `It is part of Symbolon City, an experimental, open-source project (<a href="https://github.com/symbolon-city/symbolon">source code</a>).</p>` +
+    `<h2>What it says, and what it does not</h2><p>It says what a server or skill listed on a given day, as our reader received it, and which parts changed. ` +
+    `It does <b>not</b> say that a server or skill is safe, unsafe, malicious, or of good or bad quality. Changes are normal: publishers fix and improve their tools. ` +
+    `"The words an agent reads" changed means the text of a description or instruction is different; it is not an accusation. ` +
+    `It does not test what a server does when used, and it cannot see servers that require an account. A server may show different things to different clients.</p>` +
+    `<h2>How it reads</h2><p>Once a day, our reader (user agent <code>${BOOK_ROBOT}</code>) asks each server only for its lists (tools, prompts, resource templates); ` +
+    `it never calls a tool, never signs in, and sends no personal data. Skills are read from their public GitHub repositories. ` +
+    `Which servers and skills are on the shelves is decided by a published criterion, not by hand: ${esc(String((lists.criteria as { mcp?: unknown }).mcp ?? ""))}; ${esc(String((lists.criteria as { skills?: unknown }).skills ?? ""))}.</p>` +
+    `<h2>Not to be read</h2><p>If you publish a server or a skill and do not want it in the book, either write to <a href="mailto:${CONTACT}">${CONTACT}</a> ` +
+    `with its name, or add to the <code>robots.txt</code> of the server's host:</p><pre>User-agent: ${BOOK_ROBOT}
+Disallow: /</pre>` +
+    `<p>From the next reading it is no longer read, and its pages are removed from the book. What was anchored in Bitcoin before (only fingerprints) cannot be removed by anyone.</p>` +
+    `<h2>Corrections</h2><p>If something on a page is wrong, write to <a href="mailto:${CONTACT}">${CONTACT}</a>. We answer in English or Italian.</p>`
+  );
 }

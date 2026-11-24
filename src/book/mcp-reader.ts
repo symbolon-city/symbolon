@@ -23,7 +23,8 @@ type ListMethod = (typeof ALLOWED_METHODS)[number];
 const MAX_PAGES = 20;
 const MAX_ITEMS = 2000;
 
-export type ObservationStatus = "ok" | "auth-required" | "unreachable" | "error";
+/** "opted-out": not read, at the publisher's request (src/book/optout.ts). */
+export type ObservationStatus = "ok" | "auth-required" | "unreachable" | "error" | "opted-out";
 
 export interface McpTarget {
   id: string;

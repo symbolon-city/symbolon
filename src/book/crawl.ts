@@ -13,6 +13,7 @@
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { dayRoot } from "./day-anchor.js";
+import { optedOut, robotsChecker, type OptOutList } from "./optout.js";
 import { compareMcp, compareSkill, type Change } from "./classify.js";
 import { READER_VERSION, readMcpServer, type McpObservation, type McpTarget, type ObservationStatus } from "./mcp-reader.js";
 import { readSkill, type SkillObservation, type SkillTarget } from "./skills-reader.js";
@@ -87,6 +88,8 @@ export interface DayOptions {
   fetchImpl?: typeof fetch;
   readMcp?: typeof readMcpServer;
   readSkillFn?: typeof readSkill;
+  /** True when a server's robots.txt asks our reader to stay out. Default: checked over HTTP, unless readMcp is replaced (tests). */
+  robots?: (url: string) => Promise<boolean>;
 }
 
 export async function runDay(lists: Lists, o: DayOptions): Promise<DaySummary> {
@@ -109,8 +112,16 @@ export async function runDay(lists: Lists, o: DayOptions): Promise<DaySummary> {
     }
   };
 
+  const optOut = await readJson<OptOutList>(join(o.dataDir, "opt-out.json"));
+  const robots = o.robots ?? (o.readMcp ? async () => false : robotsChecker(o.fetchImpl));
+  const notRead = (kind: "mcp-server" | "skill", id: string, why: string): [DayItem, McpObservation | SkillObservation] => [
+    { kind, id, observedAt: now().toISOString(), status: "opted-out", previousStatus: status[id], changes: [], error: why },
+    { kind: "mcp-server", id, url: "", observedAt: now().toISOString(), status: "opted-out" },
+  ];
   const readMcp = o.readMcp ?? readMcpServer;
-  const mcpItems = await pool(lists.mcp, o.concurrency ?? 6, async (t): Promise<[DayItem, McpObservation]> => {
+  const mcpItems = await pool(lists.mcp, o.concurrency ?? 6, async (t): Promise<[DayItem, McpObservation | SkillObservation]> => {
+    if (optedOut(optOut, t.id, t.url)) return notRead("mcp-server", t.id, "opted out (opt-out list)");
+    if (await robots(t.url)) return notRead("mcp-server", t.id, "opted out (robots.txt)");
     const obs = await readMcp(t, { now, timeoutMs: o.timeoutMs, fetchImpl: o.fetchImpl });
     const prev = await readJson<McpObservation>(join(o.dataDir, "latest", fileName(t.id) + ".json"));
     const item: DayItem = { kind: "mcp-server", id: t.id, observedAt: obs.observedAt, status: obs.status, previousStatus: status[t.id], changes: [] };
@@ -128,8 +139,12 @@ export async function runDay(lists: Lists, o: DayOptions): Promise<DaySummary> {
   });
 
   const readSkillFn = o.readSkillFn ?? readSkill;
-  const skillItems: [DayItem, SkillObservation][] = [];
+  const skillItems: [DayItem, McpObservation | SkillObservation][] = [];
   for (const t of lists.skills) {
+    if (optedOut(optOut, t.id)) {
+      skillItems.push(notRead("skill", t.id, "opted out (opt-out list)"));
+      continue;
+    }
     const prev = await readJson<SkillObservation>(join(o.dataDir, "latest", fileName(t.id) + ".json"));
     const obs = await readSkillFn(t, { now, githubToken: o.githubToken, previous: prev, fetchImpl: o.fetchImpl });
     const item: DayItem = { kind: "skill", id: t.id, observedAt: obs.observedAt, status: obs.status, previousStatus: status[t.id], changes: [] };
