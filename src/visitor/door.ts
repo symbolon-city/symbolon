@@ -21,6 +21,7 @@ import { CATEGORIES, KINDS } from "../piazza/messages.js";
 import { REPORT_REASONS } from "../piazza/rules.js";
 import { homePage } from "./home.js";
 import { knownRegisterKeys } from "../known-registers.js";
+import { fileName } from "../book/names.js";
 
 export const DOOR_VERSION = "0.1.0";
 export const SOURCE_URL = "https://github.com/symbolon-city/symbolon";
@@ -35,6 +36,10 @@ export interface DoorDeps {
   ownerResolver?: OwnerResolver;
   bitcoin?: BlockProvider;
   now?: () => Date;
+  /** Reads a file of the change book's public pages (path like "items/<file>.json"). Absent: no book tool. */
+  book?: (path: string) => Promise<Response>;
+  /** Public address of the change book, shown to agents. */
+  bookUrl?: string;
 }
 
 const INSTRUCTIONS =
@@ -218,6 +223,72 @@ export function buildVisitorServer(deps: DoorDeps): McpServer {
         keep_this: "Keep the receipt with your content. To prove it later, recompute the fingerprint and show both.",
       })),
   );
+
+  if (deps.book) {
+    const book = deps.book;
+    const bookUrl = deps.bookUrl?.replace(/\/+$/, "");
+    server.registerTool(
+      "book_tool_history",
+      {
+        title: "Has this tool changed? (change book)",
+        description:
+          "Looks up a public MCP server (its name in the official MCP registry, e.g. com.example/server) or an agent skill (owner/repo/skill) in the change book, " +
+          "which reads a sample of public servers and skills every day, without using them, and anchors each day in Bitcoin. Returns when it was first read, " +
+          "what changed and when, and today's fingerprints. Optionally give the mcp-tool-digest/v1-draft set digest of the tools/list you received: the answer says " +
+          "whether it is the one the book saw. 'Changed' never means 'dangerous'. Read-only.",
+        inputSchema: {
+          name: z.string().min(1).max(200).describe("Server name as in the official MCP registry, or owner/repo/skill for a skill"),
+          toolDigest: z
+            .string()
+            .regex(/^sha256:[0-9a-f]{64}$/)
+            .optional()
+            .describe("Optional: the mcp-tool-digest/v1-draft 'full' set digest of the tools you were given (sha256:...)"),
+        },
+        annotations: { readOnlyHint: true, openWorldHint: false },
+      },
+      ({ name, toolDigest }) =>
+        run(async () => {
+          const res = await book(`items/${fileName(name)}.json`);
+          if (res.status === 404)
+            return { inBook: false, note: "This server or skill is not on the book's shelves (it reads a fixed sample, chosen by a published criterion)." };
+          if (!res.ok) throw new Error(`change book: HTTP ${res.status}`);
+          const item = (await res.json()) as {
+            id: string;
+            kind: string;
+            url?: string;
+            firstSeen?: string;
+            lastRead?: string;
+            status?: string;
+            fingerprint?: string;
+            mcpToolDigest?: string;
+            changes?: unknown[];
+            note?: string;
+          };
+          if (item.id !== name) throw new Error("change book: the page found is for another item");
+          const out: Record<string, unknown> = {
+            inBook: true,
+            id: item.id,
+            kind: item.kind,
+            ...(item.url ? { url: item.url } : {}),
+            firstRead: item.firstSeen ?? null,
+            lastRead: item.lastRead ?? null,
+            lastStatus: item.status ?? null,
+            fingerprint: item.fingerprint ?? null,
+            mcpToolDigest: item.mcpToolDigest ?? null,
+            changes: (item.changes ?? []).slice(-20),
+            ...(bookUrl ? { page: `${bookUrl}/items/${fileName(name)}.html` } : {}),
+            note: item.note,
+          };
+          if (toolDigest)
+            out.yourTools = !item.mcpToolDigest
+              ? "the book has no tool digest for this item"
+              : toolDigest === item.mcpToolDigest
+                ? "same tools the book saw on its last reading"
+                : "DIFFERENT from what the book saw on its last reading: the server may have changed since, or shows different tools to different clients. Ask your owner before relying on them.";
+          return out;
+        }),
+    );
+  }
 
   server.registerTool(
     "symbolon_lookup_fingerprint",

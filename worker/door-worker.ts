@@ -22,6 +22,8 @@ interface Env {
   DOOR_LIMIT?: { limit(o: { key: string }): Promise<{ success: boolean }> };
   /** Domain of the second demonstration owner: its key is published here, as given by the piazza. */
   DEMO_PARTNER_DOMAIN?: string;
+  /** Public address of the change book's pages. Absent: the book tool is not offered. */
+  BOOK_URL?: string;
 }
 
 /** Owner keys of other sites, shared by all requests of this isolate: bounded, least recently used go first. */
@@ -83,6 +85,9 @@ export default {
       piazzaUrl,
       ownerResolver,
       bitcoin: esploraProvider(),
+      ...(env.BOOK_URL
+        ? { bookUrl: env.BOOK_URL, book: (path: string) => fetch(env.BOOK_URL!.replace(/\/+$/, "") + "/" + path, { headers: { "user-agent": "symbolon-door" } }) }
+        : {}),
     });
   },
 };

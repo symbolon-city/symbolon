@@ -12,8 +12,6 @@
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { utf8 } from "../bytes.js";
-import { sha256Hex } from "../hash.js";
 import { dayRoot } from "./day-anchor.js";
 import { compareMcp, compareSkill, type Change } from "./classify.js";
 import { READER_VERSION, readMcpServer, type McpObservation, type McpTarget, type ObservationStatus } from "./mcp-reader.js";
@@ -51,9 +49,8 @@ export interface DaySummary {
   leaves: number;
 }
 
-export function fileName(id: string): string {
-  return id.replace(/[^A-Za-z0-9._-]+/g, "_").slice(0, 80) + "-" + sha256Hex(utf8(id)).slice(0, 8);
-}
+import { fileName } from "./names.js";
+export { fileName };
 
 async function readJson<T>(path: string): Promise<T | undefined> {
   try {
