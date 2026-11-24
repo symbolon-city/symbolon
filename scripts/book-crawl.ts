@@ -2,12 +2,14 @@
 //   npm run book:crawl -- --data <folder> [--mcp 50] [--skills 50] [--new-lists]
 // The first run chooses the lists (official MCP registry: open remote servers, a fixed sample by
 // hash of the name; skills.sh: the first skills of its ranking) and writes them to lists.json.
-// Later runs reuse them. Nothing is published and nothing is sent to a register.
+// Later runs reuse them. Nothing is published and nothing is sent to a register: each day's
+// digest (32 bytes) goes to the OpenTimestamps calendars, which put it in Bitcoin (--no-anchor: skip).
 
 import { execFileSync } from "node:child_process";
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { runDay, type Lists } from "../src/book/crawl.js";
+import { stampMissing, upgradeDays } from "../src/book/day-anchor.js";
 import { READER_USER_AGENT } from "../src/book/mcp-reader.js";
 import { registryCandidates, sampleByHash, skillsFromHomePage } from "../src/book/lists.js";
 
@@ -66,3 +68,10 @@ const changes = day.items.flatMap((i) => i.changes.map((c) => ({ id: i.id, ...c 
 console.log(`${day.date}: ok ${count("ok")}, auth-required ${count("auth-required")}, unreachable ${count("unreachable")}, error ${count("error")}`);
 console.log(`changes: ${changes.length} (model-text ${changes.filter((c) => c.kind === "model-text").length}); root ${day.root} over ${day.leaves} observations`);
 for (const c of changes.slice(0, 30)) console.log(`  ${c.kind.padEnd(10)} ${c.id}  ${c.item}${c.detail ? "  " + c.detail : ""}`);
+
+if (!process.argv.includes("--no-anchor")) {
+  const s = await stampMissing(dataDir);
+  console.log(`anchor: stamped ${s.stamped.join(", ") || "none"}${s.failed.length ? `; calendars failed for ${s.failed.join(", ")} (retried next run)` : ""}`);
+  const u = await upgradeDays(dataDir);
+  console.log(`anchor: ${u.checked} day(s) checked, now in Bitcoin: ${u.upgraded.join(", ") || "none new"}`);
+}

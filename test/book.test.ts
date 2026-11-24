@@ -264,3 +264,79 @@ test("the reader stores the draft digest next to its own fingerprints", async ()
   const { obs } = await observe({ description: "Search the web" });
   assert.deepEqual(obs.fingerprints!.mcpToolDigest, digestToolList({ tools: obs.tools }, "full"));
 });
+
+// ---- the day anchor: root from the items, .ots to Bitcoin, snapshot tied to the day ----
+
+import { writeFile } from "node:fs/promises";
+import { sha256 } from "@noble/hashes/sha2";
+import { toHex as hex } from "../src/bytes.js";
+import { newTimestamp, serializeTimestamp, type Timestamp } from "../src/ots.js";
+import { fileName } from "../src/book/crawl.js";
+import { dayDigest, snapshotFingerprint, stampMissing, upgradeDays, verifyDay } from "../src/book/day-anchor.js";
+
+function calendarAnswer(msg: Uint8Array, attestation: Timestamp["attestations"][number]): Uint8Array {
+  const ts = newTimestamp(msg);
+  ts.ops.push({ op: { tag: "sha256" }, stamp: { msg: sha256(msg), attestations: [attestation], ops: [] } });
+  return serializeTimestamp(ts);
+}
+
+test("book day: anchored with OpenTimestamps, root checked from its items, snapshot tied to the day", async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), "book-anchor-"));
+  const lists: Lists = { createdAt: "", criteria: {}, mcp: [{ id: "s/one", url: "https://e.invalid", transport: "streamable-http" }], skills: [] };
+  const readMcp = async () => (await observe({ description: "Search" })).obs;
+  const day = await runDay(lists, { dataDir, now: () => new Date("2026-11-24T09:00:00Z"), readMcp });
+  const cal = "https://cal.example";
+  const finals = new Map<string, Uint8Array>();
+  const fetchImpl = (async (input: unknown, init?: RequestInit) => {
+    const u = String(input);
+    if (u === `${cal}/digest` && init?.method === "POST") {
+      const msg = new Uint8Array(init.body as Uint8Array);
+      return new Response(calendarAnswer(msg, { kind: "pending", uri: cal }) as unknown as BodyInit);
+    }
+    const m = u.match(/\/timestamp\/([0-9a-f]+)$/);
+    if (m) {
+      const msg = Uint8Array.from(Buffer.from(m[1], "hex"));
+      finals.set("block", sha256(msg));
+      return new Response(calendarAnswer(msg, { kind: "bitcoin", height: 925000 }) as unknown as BodyInit);
+    }
+    return new Response("", { status: 404 });
+  }) as typeof fetch;
+
+  const s = await stampMissing(dataDir, { calendars: [cal], minCalendars: 1, fetchImpl });
+  assert.deepEqual(s, { stamped: ["2026-11-24"], failed: [] });
+  const noBlocks = async () => Promise.reject(new Error("unused"));
+  const pending = await verifyDay(dataDir, "2026-11-24", noBlocks);
+  assert.equal(pending.rootMatches, true);
+  assert.equal(pending.anchor.status, "pending");
+
+  const u = await upgradeDays(dataDir, fetchImpl);
+  assert.deepEqual(u, { checked: 1, upgraded: ["2026-11-24"] });
+  const blocks = async (h: number) => {
+    assert.equal(h, 925000);
+    return { merkleRoot: hex(finals.get("block")!.slice().reverse()), time: 1795000000 };
+  };
+  const ok = await verifyDay(dataDir, "2026-11-24", blocks);
+  assert.equal(ok.rootMatches, true);
+  assert.deepEqual(ok.anchor, { status: "confirmed", height: 925000, blockTime: new Date(1795000000 * 1000).toISOString() });
+
+  // the kept snapshot gives the day's fingerprint
+  const hist = join(dataDir, "history", fileName("s/one"));
+  const snap = JSON.parse(await readFile(join(hist, "2026-11-24.json"), "utf8"));
+  assert.equal(snapshotFingerprint(snap), day.items[0].fingerprint);
+
+  // tampering: an item changed after the fact no longer gives the root; a changed root no longer matches the .ots
+  const path = join(dataDir, "days", "2026-11-24.json");
+  const original = await readFile(path, "utf8");
+  const forged = JSON.parse(original);
+  forged.items[0].fingerprint = "0".repeat(64);
+  await writeFile(path, JSON.stringify(forged));
+  assert.equal((await verifyDay(dataDir, "2026-11-24", blocks)).rootMatches, false);
+  forged.root = "1".repeat(64);
+  await writeFile(path, JSON.stringify(forged));
+  assert.equal((await verifyDay(dataDir, "2026-11-24", blocks)).anchor.status, "invalid");
+  await writeFile(path, original);
+  // an anchored day is never rewritten by stampMissing
+  assert.deepEqual(await stampMissing(dataDir, { calendars: [cal], minCalendars: 1, fetchImpl }), { stamped: [], failed: [] });
+  assert.equal(await readFile(path, "utf8"), original);
+  assert.equal(hex(dayDigest(day)).length, 64);
+});

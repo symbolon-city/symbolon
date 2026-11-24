@@ -1,7 +1,7 @@
 // One day of the change book: read every server and skill on the list, compare with the last
 // good observation, keep a copy when something changed, and write the day's summary with the
-// Merkle root of all observations (RFC 9162, src/merkle.ts). In the prototype nothing is sent
-// to a register: the root is what will be sealed, once a day, when the book goes live.
+// Merkle root of the day's fingerprints (RFC 9162, src/merkle.ts), which day-anchor.ts binds to
+// Bitcoin with OpenTimestamps. No register and no key are involved.
 //
 // Data folder layout:
 //   lists.json                     the fixed lists and how they were chosen
@@ -12,10 +12,9 @@
 
 import { mkdir, readFile, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { utf8, toHex } from "../bytes.js";
-import { canonicalRfc8785 } from "../canonical.js";
-import { leafHash, sha256Hex } from "../hash.js";
-import { treeRoot } from "../merkle.js";
+import { utf8 } from "../bytes.js";
+import { sha256Hex } from "../hash.js";
+import { dayRoot } from "./day-anchor.js";
 import { compareMcp, compareSkill, type Change } from "./classify.js";
 import { READER_VERSION, readMcpServer, type McpObservation, type McpTarget, type ObservationStatus } from "./mcp-reader.js";
 import { readSkill, type SkillObservation, type SkillTarget } from "./skills-reader.js";
@@ -47,7 +46,7 @@ export interface DaySummary {
   startedAt: string;
   finishedAt: string;
   items: DayItem[];
-  /** Merkle root (hex) over leafHash(canonical observation) of every ok observation, in item order */
+  /** Merkle root (hex) over the day's leaves (day-anchor.ts: one per ok item with a fingerprint, in item order) */
   root: string;
   leaves: number;
 }
@@ -93,11 +92,6 @@ export interface DayOptions {
   readSkillFn?: typeof readSkill;
 }
 
-/** The leaf of one observation: what a proof of "the book saw this on that day" covers. */
-export function observationLeaf(o: McpObservation | SkillObservation): Uint8Array {
-  return leafHash(utf8(canonicalRfc8785(o)));
-}
-
 export async function runDay(lists: Lists, o: DayOptions): Promise<DaySummary> {
   const now = o.now ?? (() => new Date());
   const startedAt = now().toISOString();
@@ -105,7 +99,6 @@ export async function runDay(lists: Lists, o: DayOptions): Promise<DaySummary> {
   for (const d of ["latest", "history", "days"]) await mkdir(join(o.dataDir, d), { recursive: true });
   const statusPath = join(o.dataDir, "status.json");
   const status = (await readJson<Record<string, ObservationStatus>>(statusPath)) ?? {};
-  const leaves: Uint8Array[] = [];
 
   const keep = async (id: string, obs: McpObservation | SkillObservation, changed: boolean) => {
     const f = fileName(id);
@@ -153,19 +146,18 @@ export async function runDay(lists: Lists, o: DayOptions): Promise<DaySummary> {
   }
 
   const all = [...mcpItems, ...skillItems];
-  for (const [item, obs] of all) {
-    status[item.id] = item.status;
-    if (obs.status === "ok") leaves.push(observationLeaf(obs));
-  }
+  for (const [item] of all) status[item.id] = item.status;
   await writeJson(statusPath, status);
+  const items = all.map(([i]) => i);
+  const { root, leaves } = dayRoot(date, items);
   const summary: DaySummary = {
     date,
     reader: `SymbolonBook/${READER_VERSION}`,
     startedAt,
     finishedAt: now().toISOString(),
-    items: all.map(([i]) => i),
-    root: toHex(treeRoot(leaves)),
-    leaves: leaves.length,
+    items,
+    root,
+    leaves,
   };
   await writeJson(join(o.dataDir, "days", date + ".json"), summary);
   return summary;

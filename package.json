@@ -26,7 +26,8 @@
     "passkey:check": "tsx scripts/passkey-browser-check.ts",
     "hosted:check": "tsx scripts/hosted-browser-check.ts",
     "book:crawl": "tsx scripts/book-crawl.ts",
-    "book:report": "tsx scripts/book-report.ts"
+    "book:report": "tsx scripts/book-report.ts",
+    "book:verify": "tsx scripts/book-verify.ts"
   },
   "license": "Apache-2.0",
   "dependencies": {
