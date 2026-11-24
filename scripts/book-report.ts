@@ -20,7 +20,7 @@ for (const kind of ["mcp-server", "skill"] as const) {
     const changedItems = items.filter((x) => x.changes.some((c) => c.kind !== "status")).length;
     console.log(
       `  ${d.date}  ok ${by("ok")}/${items.length}  auth ${by("auth-required")}  down ${by("unreachable")}  error ${by("error")}  ` +
-        `changed ${changedItems}  (model-text ${ch.filter((c) => c.kind === "model-text").length}, shape ${ch.filter((c) => c.kind === "shape").length}, ` +
+        `changed ${changedItems}  (model-text ${ch.filter((c) => c.kind === "model-text").length}, numbers ${ch.filter((c) => c.kind === "numbers").length}, shape ${ch.filter((c) => c.kind === "shape").length}, ` +
         `added ${ch.filter((c) => c.kind === "added").length}, removed ${ch.filter((c) => c.kind === "removed").length}, status ${ch.filter((c) => c.kind === "status").length})`,
     );
   }
