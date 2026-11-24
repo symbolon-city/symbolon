@@ -391,3 +391,8 @@ test("opted out: not read, no public page, and the day says why", async () => {
   const about = await readFile(join(outDir, "about.html"), "utf8");
   assert.ok(about.includes("User-agent: SymbolonBook") && about.includes("dev@symboloncity.com"));
 });
+
+test("quoted texts hide email addresses", async () => {
+  const { maskEmails } = await import("../src/book/site.js");
+  assert.equal(maskEmails("Write to jane.doe+mcp@example.co.uk or ops@x.io now"), "Write to [email] or [email] now");
+});

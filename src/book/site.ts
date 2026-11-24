@@ -93,6 +93,11 @@ function textsOf(o: Obs): Map<string, string> {
   return m;
 }
 
+/** Email addresses in quoted texts are hidden: the book quotes what changed, not people's contacts. */
+export function maskEmails(text: string): string {
+  return text.replace(/[A-Za-z0-9._%+-]+@[A-Za-z0-9.-]+\.[A-Za-z]{2,}/g, "[email]");
+}
+
 /** Before/after texts of the items whose words or numbers changed. */
 export function textChanges(prev: Obs, cur: Obs, changes: Change[]): TextChange[] {
   const a = textsOf(prev);
@@ -103,7 +108,8 @@ export function textChanges(prev: Obs, cur: Obs, changes: Change[]): TextChange[
     const x = a.get(c.item) ?? "";
     const y = b.get(c.item) ?? "";
     if (x === y) continue;
-    out.push({ item: c.item, ...around(x, y) });
+    const cut = around(x, y);
+    out.push({ item: c.item, before: maskEmails(cut.before), after: maskEmails(cut.after) });
   }
   return out;
 }
