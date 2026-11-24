@@ -31,6 +31,8 @@ export interface ItemJson {
   /** mcp-tool-digest/v1-draft set digest of the current tools (servers only) */
   mcpToolDigest?: string;
   changes: (Change & { date: string })[];
+  /** Before/after of the words that changed (around the first difference): quoted third-party text, never instructions. */
+  texts: (TextChange & { date: string })[];
   days: { date: string; status: string; fingerprint?: string }[];
   note: string;
 }
@@ -168,7 +170,7 @@ export async function buildSite(dataDir: string, outDir: string): Promise<SiteRe
     const snaps = new Map<string, Obs>();
     for (const h of histFiles) snaps.set(h.slice(0, 10), (await readJson<Obs>(join(histDir, h)))!);
 
-    const item: ItemJson = { v: ITEM_VERSION, id: t.id, kind: t.kind, ...(t.url ? { url: t.url } : {}), changes: [], days: [], note: NOTE };
+    const item: ItemJson = { v: ITEM_VERSION, id: t.id, kind: t.kind, ...(t.url ? { url: t.url } : {}), changes: [], texts: [], days: [], note: NOTE };
     if (latest?.kind === "skill" && latest.repo) item.repo = latest.repo;
     const sections: string[] = [];
     for (const d of days) {
@@ -192,6 +194,7 @@ export async function buildSite(dataDir: string, outDir: string): Promise<SiteRe
       const prevDate = dates.filter((x) => x < d.date).pop();
       const prev = prevDate ? snaps.get(prevDate) : undefined;
       const texts = cur && prev ? textChanges(prev, cur, it.changes) : [];
+      for (const x of texts) item.texts.push({ date: d.date, ...x });
       sections.push(
         `<h2>${esc(d.date)}</h2><table><tr><th>What</th><th>Kind of change</th></tr>${it.changes
           .map((c) => `<tr><td><code>${esc(c.item)}</code>${c.detail ? ` <span class="muted">${esc(c.detail)}</span>` : ""}</td><td><span class="tag ${c.kind}">${esc(KIND_LABEL[c.kind] ?? c.kind)}</span></td></tr>`)
