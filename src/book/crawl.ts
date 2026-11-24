@@ -97,6 +97,9 @@ export async function runDay(lists: Lists, o: DayOptions): Promise<DaySummary> {
   const startedAt = now().toISOString();
   const date = startedAt.slice(0, 10);
   for (const d of ["latest", "history", "days"]) await mkdir(join(o.dataDir, d), { recursive: true });
+  // An anchored day is final: reading it again would change its root and break its Bitcoin proof.
+  if (await readFile(join(o.dataDir, "days", date + ".ots")).then(() => true, () => false))
+    throw new Error(`day ${date} is already anchored in Bitcoin: it is never read or rewritten again`);
   const statusPath = join(o.dataDir, "status.json");
   const status = (await readJson<Record<string, ObservationStatus>>(statusPath)) ?? {};
 

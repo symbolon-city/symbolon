@@ -1,8 +1,9 @@
 // The change book, local prototype: one reading a day.
-//   npm run book:crawl -- --data <folder> [--mcp 50] [--skills 50] [--new-lists]
+//   npm run book:crawl -- --data <folder> [--mcp 50] [--skills 50] [--new-lists] [--grow] [--lists-only]
 // The first run chooses the lists (official MCP registry: open remote servers, a fixed sample by
 // hash of the name; skills.sh: the first skills of its ranking) and writes them to lists.json.
-// Later runs reuse them. Nothing is published and nothing is sent to a register: each day's
+// Later runs reuse them. --grow keeps the items already on the lists and adds the next ones by the
+// same criteria up to --mcp / --skills, so the day-by-day comparison of the first ones goes on. Nothing is published and nothing is sent to a register: each day's
 // digest (32 bytes) goes to the OpenTimestamps calendars, which put it in Bitcoin (--no-anchor: skip).
 
 import { execFileSync } from "node:child_process";
@@ -33,18 +34,26 @@ function githubToken(): string | undefined {
 
 async function loadOrChooseLists(): Promise<Lists> {
   const path = join(dataDir, "lists.json");
-  if (!process.argv.includes("--new-lists")) {
-    try {
-      return JSON.parse(await readFile(path, "utf8")) as Lists;
-    } catch {}
-  }
+  let old: Lists | undefined;
+  try {
+    old = JSON.parse(await readFile(path, "utf8")) as Lists;
+  } catch {}
+  const grow = process.argv.includes("--grow");
+  if (old && !grow && !process.argv.includes("--new-lists")) return old;
   console.log("choosing lists: reading the official MCP registry...");
   const { targets, stats } = await registryCandidates(fetch, 2000, READER_USER_AGENT);
-  const mcp = sampleByHash(targets, nMcp);
   const html = await (await fetch("https://skills.sh/", { headers: { "User-Agent": READER_USER_AGENT } })).text();
-  const skills = skillsFromHomePage(html, nSkills);
+  let mcp = sampleByHash(targets, nMcp);
+  let skills = skillsFromHomePage(html, nSkills);
+  if (grow && old) {
+    // Keep every item already read (even if it left the registry or the ranking), then fill up in the same order.
+    const haveM = new Set(old.mcp.map((t) => t.id));
+    mcp = [...old.mcp, ...sampleByHash(targets, targets.length).filter((t) => !haveM.has(t.id))].slice(0, Math.max(nMcp, old.mcp.length));
+    const haveS = new Set(old.skills.map((t) => t.id));
+    skills = [...old.skills, ...skillsFromHomePage(html, 10_000).filter((t) => !haveS.has(t.id))].slice(0, Math.max(nSkills, old.skills.length));
+  }
   const lists: Lists = {
-    createdAt: new Date().toISOString(),
+    createdAt: grow && old ? old.createdAt : new Date().toISOString(),
     mcp,
     skills,
     criteria: {
@@ -52,6 +61,7 @@ async function loadOrChooseLists(): Promise<Lists> {
       skills: "skills.sh home page ranking, first N hosted on GitHub",
       registry: stats,
       sampleSize: { mcp: mcp.length, skills: skills.length },
+      ...(grow && old ? { grown: [...(((old.criteria as { grown?: unknown[] }).grown) ?? []), { at: new Date().toISOString(), from: { mcp: old.mcp.length, skills: old.skills.length }, to: { mcp: mcp.length, skills: skills.length } }] } : {}),
     },
   };
   await mkdir(dataDir, { recursive: true });
@@ -61,6 +71,10 @@ async function loadOrChooseLists(): Promise<Lists> {
 }
 
 const lists = await loadOrChooseLists();
+if (process.argv.includes("--lists-only")) {
+  console.log(`lists: ${lists.mcp.length} servers, ${lists.skills.length} skills (not read now)`);
+  process.exit(0);
+}
 console.log(`reading ${lists.mcp.length} servers and ${lists.skills.length} skills into ${dataDir}`);
 const day = await runDay(lists, { dataDir, githubToken: githubToken() });
 const count = (k: string) => day.items.filter((i) => i.status === k).length;

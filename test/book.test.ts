@@ -339,4 +339,7 @@ test("book day: anchored with OpenTimestamps, root checked from its items, snaps
   assert.deepEqual(await stampMissing(dataDir, { calendars: [cal], minCalendars: 1, fetchImpl }), { stamped: [], failed: [] });
   assert.equal(await readFile(path, "utf8"), original);
   assert.equal(hex(dayDigest(day)).length, 64);
+  // and an anchored day is never read again
+  await assert.rejects(runDay(lists, { dataDir, now: () => new Date("2026-11-24T15:00:00Z"), readMcp }), /already anchored/);
+  assert.equal(await readFile(path, "utf8"), original);
 });
