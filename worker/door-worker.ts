@@ -24,6 +24,8 @@ interface Env {
   DEMO_PARTNER_DOMAIN?: string;
   /** Public address of the change book's pages. Absent: the book tool is not offered. */
   BOOK_URL?: string;
+  /** R2 bucket of the change book: the door writes reading requests under requests/. Absent: no requests. */
+  BOOK_REQUESTS?: { head(key: string): Promise<unknown | null>; put(key: string, value: string): Promise<unknown> };
 }
 
 /** Owner keys of other sites, shared by all requests of this isolate: bounded, least recently used go first. */
@@ -87,6 +89,9 @@ export default {
       bitcoin: esploraProvider(),
       ...(env.BOOK_URL
         ? { bookUrl: env.BOOK_URL, book: (path: string) => fetch(env.BOOK_URL!.replace(/\/+$/, "") + "/" + path, { headers: { "user-agent": "symbolon-door" } }) }
+        : {}),
+      ...(env.BOOK_URL && env.BOOK_REQUESTS
+        ? { bookRequests: { head: (k: string) => env.BOOK_REQUESTS!.head("dati/" + k), put: (k: string, v: string) => env.BOOK_REQUESTS!.put("dati/" + k, v) } }
         : {}),
     });
   },

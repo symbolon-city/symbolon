@@ -30,3 +30,10 @@ simple = { limit = 60, period = 60 }
 REGISTER_URL = "https://registro-prova.symbolon-city.workers.dev"
 PIAZZA_URL = "https://piazza-prova.symbolon-city.workers.dev"
 DEMO_PARTNER_DOMAIN = "demo.symboloncity.com"
+
+# Change book (off until it is published, with Andrea's go): BOOK_URL is the address of its pages;
+# BOOK_REQUESTS lets the door note names asked for that are not on the shelves (dati/requests/ in R2).
+# [vars] BOOK_URL = "https://..."
+# [[r2_buckets]]
+# binding = "BOOK_REQUESTS"
+# bucket_name = "symbolon-libro"

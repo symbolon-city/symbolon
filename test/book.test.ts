@@ -396,3 +396,107 @@ test("quoted texts hide email addresses", async () => {
   const { maskEmails } = await import("../src/book/site.js");
   assert.equal(maskEmails("Write to jane.doe+mcp@example.co.uk or ops@x.io now"), "Write to [email] or [email] now");
 });
+
+// ---- reading on request ----
+
+import { chooseRequested, recordRequest, registryLookup, requestKind, requestPath, type BookRequest } from "../src/book/requests.js";
+import { Client } from "@modelcontextprotocol/sdk/client/index.js";
+import { buildVisitorServer, type DoorDeps } from "../src/visitor/door.js";
+
+function memoryRequests() {
+  const m = new Map<string, string>();
+  return { m, store: { head: async (k: string) => (m.has(k) ? {} : null), put: async (k: string, v: string) => void m.set(k, v) } };
+}
+
+test("requests: only possible names are noted, once, with the first time asked and no one's identity", async () => {
+  assert.equal(requestKind("com.example/server"), "mcp-server");
+  assert.equal(requestKind("owner/repo/skill"), "skill");
+  for (const bad of ["", "nope", "a/b/c/d", "../etc/passwd", "x/<script>", "https://evil.example/mcp", "a b/c"]) assert.equal(requestKind(bad), undefined, bad);
+  const { m, store } = memoryRequests();
+  assert.equal(await recordRequest(store, "com.example/server", new Date("2026-11-27T10:00:00Z")), "new");
+  assert.equal(await recordRequest(store, "com.example/server", new Date("2026-11-28T10:00:00Z")), "already");
+  assert.equal(await recordRequest(store, "../../x", new Date()), "invalid");
+  assert.deepEqual([...m.keys()], [requestPath("com.example/server")]);
+  assert.deepEqual(JSON.parse(m.get(requestPath("com.example/server"))!), { name: "com.example/server", kind: "mcp-server", askedAt: "2026-11-27T10:00:00.000Z" });
+});
+
+test("requests: registry lookup takes the exact name only, and only an open remote", async () => {
+  const entry = (name: string, remote: object) => ({ server: { name, remotes: [remote] }, _meta: { "io.modelcontextprotocol.registry/official": { status: "active" } } });
+  const fetchImpl = (async (u: URL) => {
+    assert.equal(u.searchParams.get("version"), "latest");
+    const q = u.searchParams.get("search");
+    const servers =
+      q === "com.example/open"
+        ? [entry("com.example/open-plus", { type: "streamable-http", url: "https://wrong.example/mcp" }), entry("com.example/open", { type: "streamable-http", url: "https://open.example/mcp" })]
+        : q === "com.example/closed"
+          ? [entry("com.example/closed", { type: "streamable-http", url: "https://closed.example/mcp", headers: [{ isRequired: true }] })]
+          : [];
+    return Response.json({ servers });
+  }) as unknown as typeof fetch;
+  assert.deepEqual(await registryLookup("com.example/open", fetchImpl), { id: "com.example/open", url: "https://open.example/mcp", transport: "streamable-http" });
+  assert.equal(await registryLookup("com.example/closed", fetchImpl), "not-open");
+  assert.equal(await registryLookup("com.example/none", fetchImpl), "not-in-registry");
+});
+
+test("requests: oldest first, a daily cap, each decided once; a failed check waits for another day", async () => {
+  const req = (name: string, kind: BookRequest["kind"], askedAt: string): BookRequest => ({ name, kind, askedAt });
+  const requests = [
+    req("com.example/late", "mcp-server", "2026-11-27T12:00:00Z"),
+    req("com.example/open", "mcp-server", "2026-11-27T09:00:00Z"),
+    req("com.example/shelf", "mcp-server", "2026-11-27T09:01:00Z"),
+    req("com.example/done", "mcp-server", "2026-11-27T08:00:00Z"),
+    req("o/r/skill", "skill", "2026-11-27T09:02:00Z"),
+    req("o/r/none", "skill", "2026-11-27T09:03:00Z"),
+    req("com.example/down", "mcp-server", "2026-11-27T09:04:00Z"),
+    req("x/y/z", "mcp-server", "2026-11-27T09:05:00Z"),
+  ];
+  const looked: string[] = [];
+  const c = await chooseRequested(requests, {
+    onShelf: new Set(["com.example/shelf"]),
+    done: new Set(["com.example/done"]),
+    cap: 6,
+    lookup: async (n) => {
+      looked.push(n);
+      if (n === "com.example/down") throw new Error("registry: HTTP 503");
+      return n === "com.example/open" ? { id: n, url: "https://open.example/mcp", transport: "streamable-http" } : "not-in-registry";
+    },
+    isSkill: async (id) => id === "o/r/skill",
+  });
+  assert.deepEqual(c.outcomes.map((o) => [o.name, o.outcome]), [
+    ["com.example/open", "added"],
+    ["com.example/shelf", "already-on-shelf"],
+    ["o/r/skill", "added"],
+    ["o/r/none", "not-a-skill"],
+    ["x/y/z", "invalid"],
+  ]);
+  assert.deepEqual(c.mcp.map((t) => t.id), ["com.example/open"]);
+  assert.deepEqual(c.skills, [{ id: "o/r/skill" }]);
+  assert.equal(c.waiting, 2, "the failed check and the one over the cap");
+  assert.ok(!looked.includes("com.example/late"), "over the daily cap");
+});
+
+test("door: a name not on the shelves is noted for the next reading; nothing is contacted", async () => {
+  const { m, store } = memoryRequests();
+  const fetched: string[] = [];
+  const deps = {
+    register: {},
+    registerUrl: "https://reg.example",
+    bookUrl: "https://book.example",
+    book: async (p: string) => (fetched.push(p), new Response("", { status: 404 })),
+    bookRequests: store,
+    now: () => new Date("2026-11-27T10:00:00Z"),
+  } as unknown as DoorDeps;
+  const client = new Client({ name: "visitor", version: "0" });
+  const [a, b] = InMemoryTransport.createLinkedPair();
+  await buildVisitorServer(deps).connect(a);
+  await client.connect(b);
+  const ask = async (name: string) => JSON.parse(((await client.callTool({ name: "book_tool_history", arguments: { name } })) as { content: { text: string }[] }).content[0].text);
+  const first = await ask("com.example/new");
+  assert.equal(first.inBook, false);
+  assert.match(first.requested, /^noted now/);
+  assert.match((await ask("com.example/new")).requested, /^already asked/);
+  assert.match((await ask("not a name")).requested, /^not a possible name/);
+  assert.deepEqual([...m.keys()], [requestPath("com.example/new")]);
+  assert.ok(fetched.every((p) => p.startsWith("items/")), "the door only reads the book's own pages");
+  await client.close();
+});

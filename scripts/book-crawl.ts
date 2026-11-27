@@ -1,5 +1,5 @@
 // The change book, local prototype: one reading a day.
-//   npm run book:crawl -- --data <folder> [--mcp 50] [--skills 50] [--new-lists] [--grow] [--lists-only]
+//   npm run book:crawl -- --data <folder> [--mcp 50] [--skills 50] [--new-lists] [--grow] [--lists-only] [--requests-cap 200] [--no-requests]
 // The first run chooses the lists (official MCP registry: open remote servers, a fixed sample by
 // hash of the name; skills.sh: the first skills of its ranking) and writes them to lists.json.
 // Later runs reuse them. --grow keeps the items already on the lists and adds the next ones by the
@@ -7,12 +7,14 @@
 // digest (32 bytes) goes to the OpenTimestamps calendars, which put it in Bitcoin (--no-anchor: skip).
 
 import { execFileSync } from "node:child_process";
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, readdir, readFile, writeFile } from "node:fs/promises";
 import { join, resolve } from "node:path";
 import { runDay, type Lists } from "../src/book/crawl.js";
 import { stampMissing, upgradeDays } from "../src/book/day-anchor.js";
 import { READER_USER_AGENT } from "../src/book/mcp-reader.js";
 import { registryCandidates, sampleByHash, skillsFromHomePage } from "../src/book/lists.js";
+import { chooseRequested, registryLookup, type BookRequest, type ShelfChoice } from "../src/book/requests.js";
+import { readSkill } from "../src/book/skills-reader.js";
 
 function arg(name: string): string | undefined {
   const i = process.argv.indexOf(`--${name}`);
@@ -70,7 +72,48 @@ async function loadOrChooseLists(): Promise<Lists> {
   return lists;
 }
 
+/**
+ * Requests noted by the door (requests/*.json, copied from the archive): checked once each, oldest first,
+ * at most --requests-cap a day; the ones that qualify go on the shelf. Decisions are kept in requests-done.json.
+ */
+async function addRequested(lists: Lists): Promise<void> {
+  const dir = join(dataDir, "requests");
+  const files = (await readdir(dir).catch(() => [] as string[])).filter((f) => f.endsWith(".json"));
+  if (!files.length) return;
+  const requests: BookRequest[] = [];
+  for (const f of files) {
+    try {
+      const r = JSON.parse(await readFile(join(dir, f), "utf8")) as BookRequest;
+      if (typeof r.name === "string" && typeof r.askedAt === "string" && (r.kind === "mcp-server" || r.kind === "skill")) requests.push(r);
+    } catch {}
+  }
+  const donePath = join(dataDir, "requests-done.json");
+  let done: (ShelfChoice["outcomes"][number] & { decidedAt: string })[] = [];
+  try {
+    done = JSON.parse(await readFile(donePath, "utf8"));
+  } catch {}
+  const token = githubToken();
+  const choice = await chooseRequested(requests, {
+    onShelf: new Set([...lists.mcp.map((t) => t.id), ...lists.skills.map((t) => t.id)]),
+    done: new Set(done.map((d) => d.name)),
+    cap: Number(arg("requests-cap") ?? 200),
+    lookup: (name) => registryLookup(name, fetch, READER_USER_AGENT),
+    isSkill: async (id) => (await readSkill({ id }, { githubToken: token, userAgent: READER_USER_AGENT })).status === "ok",
+  });
+  if (!choice.outcomes.length) return;
+  const at = new Date().toISOString();
+  lists.mcp.push(...choice.mcp);
+  lists.skills.push(...choice.skills);
+  const crit = lists.criteria as { requested?: unknown[] };
+  crit.requested = [...(crit.requested ?? []), { at, mcp: choice.mcp.map((t) => t.id), skills: choice.skills.map((t) => t.id) }];
+  await writeFile(join(dataDir, "lists.json"), JSON.stringify(lists, null, 2) + "\n", "utf8");
+  done.push(...choice.outcomes.map((o) => ({ ...o, decidedAt: at })));
+  await writeFile(donePath, JSON.stringify(done, null, 2) + "\n", "utf8");
+  console.log(`requests: ${choice.outcomes.length} checked, ${choice.mcp.length + choice.skills.length} added to the shelf, ${choice.waiting} waiting`);
+}
+
 const lists = await loadOrChooseLists();
+if (!process.argv.includes("--no-requests")) await addRequested(lists);
 if (process.argv.includes("--lists-only")) {
   console.log(`lists: ${lists.mcp.length} servers, ${lists.skills.length} skills (not read now)`);
   process.exit(0);
