@@ -1,0 +1,13 @@
+# The change book's public pages (worker/book-worker.ts). Publishing is Andrea's decision:
+# deploy with  XDG_CONFIG_HOME="$HOME/.symbolon-wrangler" npx wrangler deploy -c wrangler-book.toml
+name = "libro"
+main = "worker/book-worker.ts"
+compatibility_date = "2026-10-01"
+
+routes = [{ pattern = "libro.symboloncity.com", custom_domain = true }]
+workers_dev = false
+
+# The pages are built by the daily reading and uploaded under sito/ (read-only here).
+[[r2_buckets]]
+binding = "BOOK"
+bucket_name = "symbolon-libro"

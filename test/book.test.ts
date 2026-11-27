@@ -500,3 +500,32 @@ test("door: a name not on the shelves is noted for the next reading; nothing is 
   assert.ok(fetched.every((p) => p.startsWith("items/")), "the door only reads the book's own pages");
   await client.close();
 });
+
+// ---- public pages served from the bucket ----
+
+import { bookKey, serveBook } from "../src/book/serve.js";
+
+test("book pages: only GET/HEAD of files under the site prefix, no traversal, safe headers", async () => {
+  assert.equal(bookKey("/", "sito/"), "sito/index.html");
+  assert.equal(bookKey("/items/a_b-12345678.html", "sito/"), "sito/items/a_b-12345678.html");
+  assert.equal(bookKey("/days/2026-11-27.ots", "sito/"), "sito/days/2026-11-27.ots");
+  for (const bad of ["/../dati/lists.json", "/%2e%2e/requests/x.json", "/items/x.exe", "/items/<x>.html", "/a//../b.html", "/%E0%A4%A.html"])
+    assert.equal(bookKey(bad, "sito/"), undefined, bad);
+  const files = new Map([["sito/index.html", "<h1>book</h1>"], ["sito/items/x.json", "{}"]]);
+  const bucket = {
+    get: async (k: string) => (files.has(k) ? { body: new Response(files.get(k)).body, size: files.get(k)!.length, httpEtag: '"e1"' } : null),
+  };
+  const home = await serveBook(new Request("https://libro.example/"), bucket);
+  assert.equal(home.status, 200);
+  assert.equal(await home.text(), "<h1>book</h1>");
+  assert.match(home.headers.get("content-type")!, /^text\/html/);
+  assert.match(home.headers.get("content-security-policy")!, /default-src 'none'/);
+  assert.equal(home.headers.get("access-control-allow-origin"), null);
+  const json = await serveBook(new Request("https://libro.example/items/x.json"), bucket);
+  assert.equal(json.headers.get("access-control-allow-origin"), "*");
+  assert.equal((await serveBook(new Request("https://libro.example/items/y.json"), bucket)).status, 404);
+  assert.equal((await serveBook(new Request("https://libro.example/", { method: "POST", body: "x" }), bucket)).status, 405);
+  const head = await serveBook(new Request("https://libro.example/", { method: "HEAD" }), bucket);
+  assert.equal(head.status, 200);
+  assert.equal(await head.text(), "");
+});
